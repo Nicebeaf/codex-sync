@@ -2,15 +2,15 @@
 
 [English](README.md)
 
-Codex Sync 是一个开源 Codex plugin，用于在多台 Mac 之间安全共享用户自己创建的 Skills。它只使用**你自己选择并控制**的私有共享目录，例如 iCloud Drive、Dropbox、Syncthing 或 NAS。
+Codex Sync 是一个开源 Codex plugin，用于在 macOS 和 Windows 电脑之间安全共享用户自己创建的 Skills。它只使用**你自己选择并控制**的私有共享目录，例如 iCloud Drive、OneDrive、Dropbox、Syncthing 或 NAS。
 
 Codex Sync 不提供云服务、共享账号或作者运营的存储空间。每个人都使用自己的私有共享目录；同步内容不会发送给作者。
 
 ## 使用条件
 
-- macOS
+- macOS 或 Windows 10/11
 - Python 3.9 以上版本
-- 两台 Mac 都能访问的私有共享目录
+- 两台电脑都能访问的私有共享目录
 - 支持 plugin 的 Codex 版本；已使用 Codex CLI `0.149.0-alpha.4.1` 验证
 
 如果 `codex plugin --help` 不可用，请安装独立 Skill。
@@ -29,16 +29,18 @@ Memories 必须显式开启。已知凭据文件名、疑似密钥内容、任�
 ## 安全机制
 
 - 三方比较可以区分本机修改、共享目录修改和双方同时修改。
-- Skills 采用双向并集：任一台 Mac 新增的 Skill 都会进入共享集合；删除不会传播。
+- Skills 采用双向并集：任一台电脑新增的 Skill 都会进入共享集合；删除不会传播。
 - `status` 会生成可审核的 Plan ID；`sync --plan` 只执行这一份计划，计划变化就停止。
 - 固定的 Store ID 可防止设备误加入另一个同名共享目录。
-- Receipt 会绑定一次成功同步与共享目录清单，另一台 Mac 可据此确认预期更新已经可见。
+- Receipt 会绑定一次成功同步与共享目录清单，另一台电脑可据此确认预期更新已经可见。
+- `sync-now` 自动寻找上一台电脑的最新 Receipt、验证共享清单并完成同步，不需要手工复制 Plan ID 或 Receipt。
+- `sync-now` 发现冲突时会在改动所选文件之前停止，双方现有版本保持原样。
 - 冲突文件会保存两个版本，不会自动覆盖。
 - 替换文件前自动备份。
 - Snapshot history 和 restore 提供可检查的恢复入口。
 - 删除操作不会同步到另一台机器。
 - 共享目录锁会阻止同一存储上的重叠写入。
-- 云盘同步可能存在延迟，两台 Mac 仍应串行执行同步。
+- 云盘同步可能存在延迟，两台电脑仍应串行执行同步。
 - 单文件上限 20 MiB；每一侧单次最多 10,000 个文件、总计 512 MiB。
 
 ## 作为 Plugin 安装
@@ -68,19 +70,51 @@ codex plugin marketplace add ./codex-sync
 sh install.sh
 ```
 
+Windows PowerShell：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
 如果 `$codex-sync` 没有立即出现，请重启 Codex。
 
-## 两台 Mac 的安全流程
+## 日常同步只需三步
+
+完成一次初始化后，以后每次换电脑只需要：
+
+1. 在电脑 A 的 Codex 中说：`使用 codex-sync 快速同步`。
+2. 等待 iCloud、OneDrive、Dropbox、Syncthing 或 NAS 显示同步完成。
+3. 在电脑 B 的 Codex 中说：`使用 codex-sync 快速同步`。
+
+对应的直接命令：
+
+macOS：
+
+```bash
+SYNC="$HOME/.codex/skills/codex-sync/scripts/codex_sync.py"
+python3 "$SYNC" sync-now
+```
+
+Windows PowerShell：
+
+```powershell
+$SYNC = "$HOME\.codex\skills\codex-sync\scripts\codex_sync.py"
+py $SYNC sync-now
+```
+
+`sync-now` 会自动读取最近一次成功交接的 Receipt。没有冲突时直接完成并产生下一张 Receipt；有冲突时停止，不改动所选文件，然后再进行一次明确的冲突选择。
+
+## 首次连接两台电脑
 
 可以直接让 Codex 使用本 Skill，也可以运行仓库内脚本。下列示例中的变量只用于简化命令和传递交接值。
 
-### 1. 第一台 Mac 创建共享目录
+### 1. 第一台电脑创建共享目录
 
-`create` 只接受全新或空的私有目录。保存命令打印的 `STORE_ID`，第二台 Mac 必须用它核对共享目录身份。
+`create` 只接受全新或空的私有目录。保存命令打印的 `STORE_ID`，第二台电脑必须用它核对共享目录身份。
 
 ```bash
 SYNC=plugins/codex-sync/skills/codex-sync/scripts/codex_sync.py
-python3 "$SYNC" create --store icloud --device mac-mini --scope skills
+python3 "$SYNC" create --store "STORE_PATH" --device mac --scope skills
 python3 "$SYNC" doctor
 ```
 
@@ -96,15 +130,15 @@ python3 "$SYNC" sync --plan "<PLAN_ID>"
 
 成功的 `sync` 会打印 `RECEIPT`。请保存它：Receipt 代表已经完成的共享目录清单，不只是一个时间戳。
 
-### 3. 第二台 Mac 加入
+### 3. 第二台电脑加入
 
 等待私有传输完成，再使用准确的 Store ID 加入。第二台必须使用不同设备名，并在审核与同步时要求看到第一台的 Receipt。
 
 ```bash
 SYNC=plugins/codex-sync/skills/codex-sync/scripts/codex_sync.py
 python3 "$SYNC" join \
-  --store icloud \
-  --device macbook \
+  --store "STORE_PATH" \
+  --device windows-pc \
   --expect-store-id "<STORE_ID>" \
   --scope skills
 python3 "$SYNC" doctor
@@ -115,19 +149,19 @@ python3 "$SYNC" sync --plan "<PLAN_ID>" --expect "<RECEIPT>"
 
 第二台同步成功后会打印下一次交接使用的 Receipt。
 
-每次从一台 Mac 切换到另一台时，都重复 Receipt 交接。Receipt 能证明预期清单已经可见，但不能让存在传播延迟的云盘支持并发同步。
+初始化完成后改用上面的 `sync-now` 三步流程。Receipt 能证明预期清单已经可见，但不能让存在传播延迟的云盘支持并发同步。
 
 ### 已有 0.2 配置切换为只共享 Skills
 
-0.2 创建的配置会保留旧的 `all` 范围，避免升级时静默改变行为。在**两台 Mac** 更新到 0.3 后分别运行一次：
+0.2 创建的配置会保留旧的 `all` 范围，避免升级时静默改变行为。在**两台电脑**更新到 0.4 后分别运行一次：
 
 ```bash
 python3 "$SYNC" configure --scope skills
 ```
 
-切换范围只改变后续同步清单，不会删除本机或共享目录里已有的 rules、`AGENTS.md` 或 Skills。下一次交接必须由两台 Mac 使用相同范围；Receipt 会拒绝范围不一致的同步。
+切换范围只改变后续同步清单，不会删除本机或共享目录里已有的 rules、`AGENTS.md` 或 Skills。下一次交接必须由两台电脑使用相同范围；Receipt 会拒绝范围不一致的同步。
 
-GitHub/Marketplace 是 Codex Sync 这个 Skill 的安装与更新来源；你自己的私有 Store 才是两台 Mac 之间共享自定义 Skills 的位置。
+GitHub/Marketplace 是 Codex Sync 这个 Skill 的安装与更新来源；你自己的私有 Store 才是两台电脑之间共享自定义 Skills 的位置。
 
 ### 4. 查看并恢复 Snapshot
 
@@ -147,7 +181,8 @@ Snapshot 只保存在本机 `~/.codex-sync/snapshots`，不会写入共享 Store
 - `configure --scope skills|all`：切换只共享 Skills 或兼容旧版全范围；不会删除文件。
 - `status` / `status --json`：只读查看当前计划。
 - `sync --plan`：只执行已审核的精确计划。
-- 成功的 `sync --plan` 会打印下一台 Mac 使用的 Receipt。
+- `sync-now`：自动验证最新 Receipt 并完成无冲突同步；这是日常推荐命令。
+- 成功的 `sync --plan` 或 `sync-now` 会打印下一台电脑使用的 Receipt。
 - `devices`：查看该 Store 登记的 Codex Sync 设备。
 - `snapshot` / `history` / `restore`：保存、查看并恢复本地同步状态。
 - `resolve`：双方版本均已保留后，明确选择一个冲突版本。
@@ -168,7 +203,7 @@ Snapshot 只保存在本机 `~/.codex-sync/snapshots`，不会写入共享 Store
 
 ## 开发和测试
 
-需要 macOS 和 Python 3.9 以上版本，运行时只使用 Python 标准库。
+需要 macOS 或 Windows 10/11，以及 Python 3.9 以上版本；运行时只使用 Python 标准库。
 
 ```bash
 python3 -m py_compile plugins/codex-sync/skills/codex-sync/scripts/codex_sync.py
