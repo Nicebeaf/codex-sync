@@ -1,0 +1,30 @@
+{
+  "name": "codex-sync",
+  "version": "0.2.0",
+  "description": "Privately share user-authored Codex skills, rules, instructions, and optional memories between Macs with reviewed plans, receipts, and snapshots.",
+  "author": {
+    "name": "Nicebeaf",
+    "url": "https://github.com/Nicebeaf"
+  },
+  "homepage": "https://github.com/Nicebeaf/codex-sync",
+  "repository": "https://github.com/Nicebeaf/codex-sync",
+  "license": "MIT",
+  "keywords": ["codex", "sync", "macos", "skills", "backup", "private", "multi-device", "restore"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Sync",
+    "shortDescription": "Private, plan-bound Codex sync between Macs",
+    "longDescription": "Share user-authored Codex skills, rules, instructions, and optional memories through your own private shared folder. Store identity, reviewed Plan IDs, handoff receipts, snapshots, conflict preservation, and strict exclusions protect each transfer; no synchronized content is sent to the developer.",
+    "developerName": "Nicebeaf",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Create a Codex Sync Store in my private shared folder and show me its Store ID.",
+      "Join my existing Codex Sync Store only if its Store ID matches.",
+      "Show status as JSON, explain the plan, and apply only the approved Plan ID.",
+      "Verify the previous Mac's receipt before syncing this Mac.",
+      "Show snapshot history and preview a restore without changing files."
+    ],
+    "brandColor": "#10A37F"
+  }
+}
