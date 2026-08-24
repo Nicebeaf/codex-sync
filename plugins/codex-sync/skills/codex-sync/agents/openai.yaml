@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Sync"
-  short_description: "Private, plan-bound Codex sync between Macs"
-  default_prompt: "Use $codex-sync with my own private shared folder. Review status as JSON, apply only its Plan ID, verify the handoff receipt, and never include credentials or live Codex state."
+  short_description: "Private Skills sync for macOS and Windows"
+  default_prompt: "Use $codex-sync with my own private shared folder. For routine use, run sync-now so the latest handoff receipt is verified automatically; stop before changing selected files if there is a conflict, and never include credentials or live Codex state."
