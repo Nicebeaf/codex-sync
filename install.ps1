@@ -61,7 +61,18 @@ function Get-TreeManifest([string]$Root) {
         Sort-Object FullName |
         ForEach-Object {
             $relative = $_.FullName.Substring($prefixLength).TrimStart($separators)
-            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            $stream = [System.IO.File]::OpenRead($_.FullName)
+            try {
+                $sha256 = [System.Security.Cryptography.SHA256]::Create()
+                try {
+                    $hashBytes = $sha256.ComputeHash($stream)
+                    $hash = ([System.BitConverter]::ToString($hashBytes)).Replace("-", "")
+                } finally {
+                    $sha256.Dispose()
+                }
+            } finally {
+                $stream.Dispose()
+            }
             "$relative`t$hash"
         }
     return ($lines -join "`n")
