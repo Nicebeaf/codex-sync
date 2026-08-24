@@ -2,6 +2,10 @@
 
 Contributions are welcome through focused issues and pull requests.
 
+Unless a pull request or patch states otherwise in writing, contributions are
+submitted for distribution under this repository's MIT License. Contributors
+must have the right to submit the work under those terms.
+
 1. Keep the synchronization allowlist narrow.
 2. Never add credential, session, database, log, cache, browser, or device-state paths.
 3. Preserve conflict refusal, pre-write backups, non-propagating deletions, path-containment checks, and symlink refusal.
@@ -12,4 +16,4 @@ Contributions are welcome through focused issues and pull requests.
 
 Changes that broaden synchronized data must explain the privacy and corruption risks and remain opt-in.
 
-Fixtures and bug reports must use generated Store IDs, device IDs, receipts, paths, and content. Never commit a real shared Store, device registry, snapshot, receipt, credential, user path, or synchronized Codex file.
+Fixtures and bug reports must use generated Store IDs, device IDs, receipts, paths, and content. Never commit real credentials, personal data, a real shared Store, device registry, snapshot, receipt, user path, or synchronized Codex file. Use synthetic content even when a real example would be easier to reproduce.

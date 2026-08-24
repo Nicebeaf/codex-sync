@@ -613,6 +613,68 @@ class CodexSyncTest(unittest.TestCase):
         self.assertFalse((self.shared / "shared/codex/AGENTS.md").exists())
         self.assertFalse((self.shared / "shared/agents/skills/demo/late-secret.txt").exists())
 
+    def test_secret_detection_covers_provider_tokens_and_nested_structured_fields(self) -> None:
+        selected = self.mini / ".codex/skills/custom"
+        self.write(
+            selected / "nested.json",
+            json.dumps({"providers": {"openai": {"apiKey": "abcdefghijklmnop"}}}),
+        )
+        self.write(
+            selected / "nested.yaml",
+            "providers:\n  openai:\n    api_key: abcdefghijklmnop\n"
+            "flow: {provider: {access_token: qrstuvwxyzabcdef}}\n",
+        )
+        self.write(
+            selected / "provider-tokens.txt",
+            "\n".join([
+                "openai=sk-proj-" + "a" * 30,
+                "github=github_pat_" + "b" * 30,
+                "gitlab=glpat-" + "c" * 30,
+                "slack=xoxb-" + "d" * 30,
+                "huggingface=hf_" + "e" * 30,
+                "google=AIza" + "f" * 30,
+                "jwt=eyJ" + "g" * 20 + "." + "h" * 20 + "." + "i" * 20,
+            ]),
+        )
+        self.write(
+            selected / "ordinary-doc.md",
+            "Set api_key to YOUR_API_KEY in the environment; never commit tokens.\n",
+        )
+        self.init_device(self.mini, "mac-mini")
+        status = self.run_cli(self.mini, "status")
+        self.assertIn("push=1", status.stdout)
+        self.reviewed_sync(self.mini)
+
+        shared = self.shared / "shared/codex/skills/custom"
+        for name in ("nested.json", "nested.yaml", "provider-tokens.txt"):
+            self.assertFalse((shared / name).exists())
+        self.assertTrue((shared / "ordinary-doc.md").exists())
+
+    def test_shared_relative_paths_reject_windows_forms(self) -> None:
+        runtime = load_runtime()
+        config = {"sync_scope": "skills", "include_memories": False}
+        layout = runtime.Layout(
+            user_home=self.mini,
+            codex_home=self.mini / ".codex",
+            agents_home=self.mini / ".agents",
+            state_home=self.mini / ".codex-sync",
+        )
+        self.assertTrue(runtime.rel_is_safe("agents/skills/demo/SKILL.md", config))
+        unsafe_paths = (
+            r"agents\skills\demo\SKILL.md",
+            r"\agents\skills\demo\SKILL.md",
+            r"\\server\share\agents\skills\demo\SKILL.md",
+            "//server/share/agents/skills/demo/SKILL.md",
+            "C:/agents/skills/demo/SKILL.md",
+            r"C:\agents\skills\demo\SKILL.md",
+            "agents/skills/demo/\x00SKILL.md",
+        )
+        for rel in unsafe_paths:
+            with self.subTest(rel=rel):
+                self.assertFalse(runtime.rel_is_safe(rel, config))
+                with self.assertRaises(runtime.SyncError):
+                    runtime.target_for(rel, layout, config)
+
     def test_unsafe_store_is_rejected(self) -> None:
         result = self.run_cli(
             self.mini,

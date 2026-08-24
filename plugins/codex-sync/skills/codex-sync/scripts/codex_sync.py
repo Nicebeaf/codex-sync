@@ -49,14 +49,111 @@ SENSITIVE_NAME = re.compile(
     r"refresh[_-]?token|secret|secrets|access[_-]?token)([._-]|$)",
     re.IGNORECASE,
 )
+SENSITIVE_FIELD_NAMES = frozenset({
+    "accesskey",
+    "accesskeyid",
+    "accesstoken",
+    "apikey",
+    "authorization",
+    "authtoken",
+    "bearertoken",
+    "clientsecret",
+    "credential",
+    "credentials",
+    "encryptionkey",
+    "jwt",
+    "jwttoken",
+    "oauth",
+    "oauthtoken",
+    "password",
+    "passwd",
+    "passphrase",
+    "privatekey",
+    "privatekeyid",
+    "refreshtoken",
+    "secret",
+    "secrets",
+    "secretkey",
+    "serviceaccountkey",
+    "sessiontoken",
+    "signingkey",
+    "token",
+    "webhooksecret",
+})
+SENSITIVE_FIELD_SUFFIXES = (
+    "accesskey",
+    "accesstoken",
+    "apikey",
+    "authtoken",
+    "bearertoken",
+    "clientsecret",
+    "encryptionkey",
+    "jwttoken",
+    "oauthtoken",
+    "password",
+    "passwd",
+    "passphrase",
+    "privatekey",
+    "refreshtoken",
+    "secret",
+    "secretkey",
+    "sessiontoken",
+    "signingkey",
+    "token",
+    "webhooksecret",
+)
+SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?im)^\s*[\"']?(?P<key>api[_-]?key|authorization|password|passwd|"
+    r"private[_-]?key|secret|token|access[_-]?token|refresh[_-]?token|"
+    r"client[_-]?secret|bearer[_-]?token|oauth[_-]?token|session[_-]?token|"
+    r"webhook[_-]?secret)[\"']?\s*[:=]\s*[\"']?"
+    r"(?P<value>[^\s\"'#,:}\]]{8,})",
+)
+YAML_FIELD_RE = re.compile(
+    r"(?m)^\s*(?:-\s*)?(?P<key>[\"'][^\"'\r\n]+[\"']|"
+    r"[A-Za-z_][A-Za-z0-9_.-]*)\s*:\s*(?P<value>.*)$"
+)
+FLOW_FIELD_RE = re.compile(
+    r"(?x)(?=[{,]\s*(?P<key>[\"'][^\"'\r\n]+[\"']|"
+    r"[A-Za-z_][A-Za-z0-9_.-]*)\s*:\s*(?P<value>\"(?:\\.|[^\"\\])*\"|"
+    r"'(?:''|[^'])*'|[^,}]+)(?=\s*[,}]))"
+)
+SECRET_PLACEHOLDER_WORDS = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:your|replace|insert|enter|example|sample|dummy|fake|"
+    r"placeholder|redacted|changeme|change[-_ ]?me|not[-_ ]?set|"
+    r"unset|todo|tbd)(?![A-Za-z0-9])"
+)
+WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 SECRET_SHAPES = (
     re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    re.compile(rb"\bsk-[A-Za-z0-9_-]{20,}\b"),
-    re.compile(rb"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
-    re.compile(rb"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(
-        rb"(?im)^\s*(api[_-]?key|authorization|password|passwd|private[_-]?key|secret|token)"
-        rb"\s*[:=]\s*['\"]?[^\s'\"#]{8,}"
+        rb"(?<![A-Za-z0-9_])(?:"
+        rb"sk-[A-Za-z0-9_-]{20,}|"
+        rb"gh[pousr]_[A-Za-z0-9]{20,}|"
+        rb"github_pat_[A-Za-z0-9_]{20,}|"
+        rb"glpat-[A-Za-z0-9_-]{20,}|"
+        rb"xox[baprs]-[A-Za-z0-9-]{20,}|"
+        rb"xapp-[A-Za-z0-9-]{20,}|"
+        rb"hf_[A-Za-z0-9_-]{20,}|"
+        rb"r8_[A-Za-z0-9_-]{20,}|"
+        rb"gsk_[A-Za-z0-9_-]{20,}|"
+        rb"pplx-[A-Za-z0-9_-]{20,}|"
+        rb"xai-[A-Za-z0-9_-]{20,}|"
+        rb"npm_[A-Za-z0-9_-]{20,}|"
+        rb"pypi-[A-Za-z0-9_-]{20,}|"
+        rb"vercel_[A-Za-z0-9_-]{20,}|"
+        rb"lin_api_[A-Za-z0-9_-]{20,}|"
+        rb"sbp_[A-Za-z0-9_-]{20,}|"
+        rb"fal_[A-Za-z0-9_-]{20,}|"
+        rb"(?:AKIA|ASIA)[0-9A-Z]{16}|"
+        rb"AIza[A-Za-z0-9_-]{20,}|"
+        rb"ya29\.[A-Za-z0-9._-]{20,}|"
+        rb"dapi[A-Za-z0-9]{20,}"
+        rb")(?![A-Za-z0-9_-])"
+    ),
+    re.compile(
+        rb"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+        rb"(?![A-Za-z0-9_-])"
     ),
 )
 
@@ -171,6 +268,160 @@ def atomic_json_write(path: Path, value: dict) -> None:
             os.unlink(temp_name)
 
 
+def normalized_secret_field_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+
+def is_sensitive_field_name(value: str) -> bool:
+    normalized = normalized_secret_field_name(value)
+    return normalized in SENSITIVE_FIELD_NAMES or normalized.endswith(
+        SENSITIVE_FIELD_SUFFIXES
+    )
+
+
+def strip_yaml_comment(value: str) -> str:
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(value):
+        if quote:
+            if quote == '"' and character == "\\" and not escaped:
+                escaped = True
+                continue
+            if character == quote and not escaped:
+                quote = None
+            escaped = False
+            continue
+        if character in ('"', "'"):
+            quote = character
+        elif character == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    return value.strip()
+
+
+def yaml_scalar(value: str) -> str:
+    candidate = strip_yaml_comment(value).strip()
+    if candidate.endswith(","):
+        candidate = candidate[:-1].rstrip()
+    if len(candidate) >= 2 and candidate[0] == candidate[-1] == '"':
+        try:
+            decoded = json.loads(candidate)
+        except json.JSONDecodeError:
+            return candidate[1:-1]
+        return decoded if isinstance(decoded, str) else candidate
+    if len(candidate) >= 2 and candidate[0] == candidate[-1] == "'":
+        return candidate[1:-1].replace("''", "'")
+    return candidate
+
+
+def matches_secret_shape(value: str) -> bool:
+    encoded = value.encode("utf-8", errors="ignore")
+    return any(pattern.search(encoded) is not None for pattern in SECRET_SHAPES)
+
+
+def looks_like_secret_value(value: object, field_name: str | None = None) -> bool:
+    if not isinstance(value, str):
+        return False
+    candidate = value.strip()
+    if len(candidate) < 8:
+        return False
+    if matches_secret_shape(candidate):
+        return True
+    lowered = candidate.casefold()
+    if lowered in {
+        "default", "empty", "false", "none", "nil", "null", "password",
+        "redacted", "secret", "token", "true", "undefined", "unset",
+    }:
+        return False
+    if candidate.startswith(("${", "{{", "<")) or candidate.endswith(("}}", ">")):
+        return False
+    if SECRET_PLACEHOLDER_WORDS.search(candidate) is not None:
+        return False
+    if re.fullmatch(r"[._\-xX0*#]+", candidate):
+        return False
+    normalized_field = normalized_secret_field_name(field_name or "")
+    bearer = re.fullmatch(r"(?i)bearer\s+(\S+)", candidate)
+    if bearer:
+        return looks_like_secret_value(bearer.group(1), field_name)
+    if any(character.isspace() for character in candidate):
+        if normalized_field not in {"password", "passwd", "passphrase"}:
+            return False
+    return True
+
+
+def json_contains_secret_shape(value: object) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if isinstance(key, str) and is_sensitive_field_name(key):
+                if isinstance(child, str) and looks_like_secret_value(child, key):
+                    return True
+            if isinstance(child, (dict, list)) and json_contains_secret_shape(child):
+                return True
+    elif isinstance(value, list):
+        return any(json_contains_secret_shape(child) for child in value)
+    return False
+
+
+def yaml_contains_secret_shape(text: str) -> bool:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = YAML_FIELD_RE.match(line)
+        if match is None:
+            continue
+        key = match.group("key").strip("\"'")
+        if not is_sensitive_field_name(key):
+            continue
+        raw_value = strip_yaml_comment(match.group("value")).strip()
+        if raw_value.startswith(("|", ">")):
+            base_indent = len(line) - len(line.lstrip())
+            block: list[str] = []
+            for following in lines[index + 1:]:
+                if following.strip() and len(following) - len(following.lstrip()) <= base_indent:
+                    break
+                if following.strip():
+                    block.append(following.strip())
+            if looks_like_secret_value(" ".join(block), key):
+                return True
+            continue
+        if looks_like_secret_value(yaml_scalar(raw_value), key):
+            return True
+    for match in FLOW_FIELD_RE.finditer(text):
+        key = match.group("key").strip("\"'")
+        if is_sensitive_field_name(key) and looks_like_secret_value(
+            yaml_scalar(match.group("value")), key
+        ):
+            return True
+    return False
+
+
+def text_contains_secret_shape(text: str) -> bool:
+    if matches_secret_shape(text):
+        return True
+    stripped = text.lstrip("\ufeff \t\r\n")
+    if stripped.startswith(("{", "[")):
+        try:
+            document = json.loads(stripped)
+            structured_secret = json_contains_secret_shape(document)
+        except (json.JSONDecodeError, RecursionError):
+            pass
+        else:
+            if structured_secret:
+                return True
+    for match in SECRET_ASSIGNMENT_RE.finditer(text):
+        if looks_like_secret_value(match.group("value"), match.group("key")):
+            return True
+    return yaml_contains_secret_shape(text)
+
+
+def secret_content_shape(content: bytes) -> bool:
+    if any(pattern.search(content) is not None for pattern in SECRET_SHAPES):
+        return True
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return False
+    return text_contains_secret_shape(text)
+
+
 def hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     content = bytearray()
@@ -186,7 +437,7 @@ def hash_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
             content.extend(chunk)
-    if any(pattern.search(content) is not None for pattern in SECRET_SHAPES):
+    if secret_content_shape(bytes(content)):
         raise SyncError(f"Refusing to process secret-shaped content: {path}")
     return digest.hexdigest()
 
@@ -224,7 +475,7 @@ def contains_secret_shape(path: Path) -> bool:
             sample = handle.read(MAX_FILE_BYTES + 1)
     except OSError:
         return True
-    return any(pattern.search(sample) is not None for pattern in SECRET_SHAPES)
+    return secret_content_shape(sample)
 
 
 def iter_tree(root: Path) -> Iterable[Path]:
@@ -555,6 +806,14 @@ def source_specs(layout: Layout, config: dict) -> list[tuple[str, Path]]:
 
 
 def rel_is_safe(rel: str, config: dict) -> bool:
+    if (
+        not isinstance(rel, str)
+        or not rel
+        or "\\" in rel
+        or any(ord(character) < 32 for character in rel)
+        or WINDOWS_DRIVE_RE.match(rel) is not None
+    ):
+        return False
     pure = PurePosixPath(rel)
     if pure.is_absolute() or ".." in pure.parts or not pure.parts:
         return False

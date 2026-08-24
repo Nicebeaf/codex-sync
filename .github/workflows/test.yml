@@ -16,8 +16,10 @@ jobs:
         os: [macos-latest, windows-latest]
         python-version: ["3.9", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Compile
@@ -26,3 +28,23 @@ jobs:
         run: python tests/test_codex_sync.py
       - name: Package test
         run: python tests/test_package.py
+
+  source-safety:
+    name: Reproducible source safety check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Run deterministic release and repository safety checks
+        run: |
+          python -m unittest \
+            tests.test_package.PackageTest.test_documentation_declares_project_and_privacy_boundary \
+            tests.test_package.PackageTest.test_gitignore_blocks_local_secret_and_state_paths \
+            tests.test_package.PackageTest.test_gitignore_keeps_repository_configuration_trackable \
+            tests.test_package.PackageTest.test_release_contains_no_local_paths_or_secret_shapes

@@ -1,5 +1,7 @@
 # Security Policy
 
+Codex Sync is an independent, community-maintained project. It is not an official OpenAI product, service, or repository, and it is not affiliated with, sponsored by, or endorsed by OpenAI.
+
 ## Supported versions
 
 Security fixes are applied to the latest release on the default branch.
@@ -10,7 +12,7 @@ Do not open a public issue for a vulnerability that may expose user data. Use Gi
 
 ## Data boundary
 
-Codex Sync reads only its documented allowlist and writes to the private shared folder selected and controlled by each user. The project does not provide storage, does not share a developer-owned Store, and does not send synchronized content to the author.
+Codex Sync reads only its documented allowlist and writes to the private Store selected and controlled by each user. The project does not provide storage, does not share a developer-owned Store, and does not send synchronized content to the author.
 
 The Store contains synchronized allowlisted files plus Codex Sync operational metadata: a random Store ID, random device IDs, user-chosen device names, timestamps, Plan IDs, and receipts. Device records and receipts must not contain synchronized file contents, but the entire Store should still be treated as private.
 
@@ -24,4 +26,4 @@ Credentials, `config.toml`, sessions, task history, databases, logs, caches, bro
 - Locks prevent overlapping writes on one mounted view; cloud-folder propagation can still be delayed, so devices must sync serially.
 - Snapshots and pre-write backups support recovery but retain earlier synchronized content locally under `~/.codex-sync`; snapshots are not copied into the shared Store.
 
-Store IDs, Plan IDs, and receipts are integrity and coordination identifiers, not passwords or proof against a malicious storage administrator. Codex Sync does not provide end-to-end encryption; users should choose a private transport whose access controls and encryption meet their needs.
+Store IDs, Plan IDs, and receipts are integrity and coordination identifiers, not passwords or proof against a malicious storage administrator. Codex Sync does not provide end-to-end encryption; users should choose a private transport whose access controls and encryption meet their needs. Filename and content filters for credentials and secret-shaped data are best-effort defense-in-depth checks, not an absolute guarantee that every secret will be detected or excluded.

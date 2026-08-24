@@ -6,6 +6,16 @@ Codex Sync is an open-source Codex plugin for safely sharing user-authored Skill
 
 Codex Sync does not provide a cloud service, shared account, or author-operated storage. Every person uses their own private shared folder; no synchronized content is sent to the author.
 
+Codex Sync is an independent, community-maintained project. It is not an official OpenAI product, service, or repository, and it is not affiliated with, sponsored by, or endorsed by OpenAI.
+
+## Project and privacy boundary
+
+The private `Store` is the folder that **you** choose and control through your own transport provider. Codex Sync does not host the Store or operate that provider. Treat the entire Store as private, including synchronized files and operational metadata.
+
+Codex Sync does **not** provide end-to-end encryption (E2EE). The transport provider's access controls and encryption determine how the Store is protected while it is synchronized.
+
+The filename and content filters for credentials and secret-shaped data are best-effort, defense-in-depth checks—not an absolute guarantee that every secret will be detected or excluded. Inspect `status` before syncing, and never place credentials in a Skill folder.
+
 ## Requirements
 
 - macOS or Windows 10/11
@@ -24,7 +34,7 @@ New configurations default to the `skills` scope, which shares only:
 
 `~/.codex/rules` and `~/.codex/AGENTS.md` are device-level configuration. They are excluded by default and cannot be replaced by another device unless `--scope all` is selected explicitly.
 
-Local Memories can be enabled explicitly. Known credential filenames, secret-shaped content, sessions, history, databases, logs, plugins, caches, browser state, generated images, automations, device identifiers, and symlinks are excluded. Users must still inspect `status` and must not store credentials inside Skill folders.
+Local Memories can be enabled explicitly. The selector attempts to exclude known credential filenames and secret-shaped content, along with sessions, history, databases, logs, plugins, caches, browser state, generated images, automations, device identifiers, and symlinks. These are filters, not an absolute guarantee; users must still inspect `status` and must not store credentials inside Skill folders.
 
 ## Safety properties
 
@@ -45,7 +55,7 @@ Local Memories can be enabled explicitly. Known credential filenames, secret-sha
 
 ## Install as a plugin
 
-After this repository is published:
+Install from the public GitHub marketplace:
 
 ```bash
 codex plugin marketplace add Nicebeaf/codex-sync
