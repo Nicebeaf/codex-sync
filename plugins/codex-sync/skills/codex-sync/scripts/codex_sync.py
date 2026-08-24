@@ -21,7 +21,8 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 VERSION = 1
-TOOL_VERSION = "0.2.0"
+TOOL_VERSION = "0.3.0"
+VALID_SYNC_SCOPES = ("skills", "all")
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_TOTAL_FILES = 10_000
 MAX_TOTAL_BYTES = 512 * 1024 * 1024
@@ -353,6 +354,15 @@ def validate_device_name(value: str | None) -> str:
     return name
 
 
+def validate_sync_scope(value: str | None, *, default: str = "skills") -> str:
+    scope = value or default
+    if scope not in VALID_SYNC_SCOPES:
+        raise SyncError(
+            f"Sync scope must be one of: {', '.join(VALID_SYNC_SCOPES)}."
+        )
+    return scope
+
+
 def configured_store(layout: Layout, config: dict) -> tuple[Path, dict]:
     store = Path(config["store"])
     assert_safe_store(store, layout)
@@ -377,6 +387,7 @@ def make_config(store: Path, metadata: dict, layout: Layout, args: argparse.Name
         "store_id": metadata["store_id"],
         "device": validate_device_name(getattr(args, "device", None)),
         "device_id": str(uuid.uuid4()),
+        "sync_scope": validate_sync_scope(getattr(args, "scope", None)),
         "include_memories": bool(getattr(args, "include_memories", False)),
         "joined_at": stamp,
     }
@@ -427,6 +438,9 @@ def read_devices(store: Path) -> list[dict]:
         name = record.get("name")
         if not isinstance(name, str) or validate_device_name(name) != name:
             raise SyncError(f"Invalid device name in record: {path}")
+        record["sync_scope"] = validate_sync_scope(
+            record.get("sync_scope"), default="all"
+        )
         last_receipt = record.get("last_receipt")
         if last_receipt is not None and (
             not isinstance(last_receipt, str) or TOKEN_RE.fullmatch(last_receipt) is None
@@ -462,6 +476,7 @@ def register_device_locked(
         "store_id": metadata["store_id"],
         "device_id": device_id,
         "name": config["device"],
+        "sync_scope": validate_sync_scope(config.get("sync_scope"), default="all"),
         "joined_at": existing.get("joined_at") or config.get("joined_at") or stamp,
         "last_seen_at": stamp,
         "last_sync_at": existing.get("last_sync_at"),
@@ -492,6 +507,11 @@ def load_config(layout: Layout) -> dict:
     if not required.issubset(config):
         raise SyncError("Local configuration is incomplete; run create or join again.")
     config["device"] = validate_device_name(config.get("device"))
+    # Configurations created by 0.2 and earlier synchronized rules and AGENTS.md.
+    # Preserve that behavior until the user explicitly selects the safer scope.
+    config["sync_scope"] = validate_sync_scope(
+        config.get("sync_scope"), default="all"
+    )
     device_id_for(config, layout)
     return config
 
@@ -500,9 +520,12 @@ def source_specs(layout: Layout, config: dict) -> list[tuple[str, Path]]:
     specs = [
         ("agents/skills", layout.agents_home / "skills"),
         ("codex/skills", layout.codex_home / "skills"),
-        ("codex/rules", layout.codex_home / "rules"),
-        ("codex/AGENTS.md", layout.codex_home / "AGENTS.md"),
     ]
+    if validate_sync_scope(config.get("sync_scope"), default="all") == "all":
+        specs.extend([
+            ("codex/rules", layout.codex_home / "rules"),
+            ("codex/AGENTS.md", layout.codex_home / "AGENTS.md"),
+        ])
     if config.get("include_memories", False):
         specs.append(("codex/memories", layout.codex_home / "memories"))
     return specs
@@ -512,10 +535,16 @@ def rel_is_safe(rel: str, config: dict) -> bool:
     pure = PurePosixPath(rel)
     if pure.is_absolute() or ".." in pure.parts or not pure.parts:
         return False
-    prefixes = ["agents/skills/", "codex/skills/", "codex/rules/"]
+    prefixes = ["agents/skills/", "codex/skills/"]
+    agents_file_selected = False
+    if validate_sync_scope(config.get("sync_scope"), default="all") == "all":
+        prefixes.append("codex/rules/")
+        agents_file_selected = True
     if config.get("include_memories", False):
         prefixes.append("codex/memories/")
-    return rel == "codex/AGENTS.md" or any(rel.startswith(prefix) for prefix in prefixes)
+    return (agents_file_selected and rel == "codex/AGENTS.md") or any(
+        rel.startswith(prefix) for prefix in prefixes
+    )
 
 
 def target_for(rel: str, layout: Layout, config: dict) -> Path:
@@ -633,6 +662,7 @@ def plan_id_for(
     payload = {
         "protocol": VERSION,
         "store_id": metadata["store_id"],
+        "sync_scope": validate_sync_scope(config.get("sync_scope"), default="all"),
         "include_memories": bool(config.get("include_memories")),
         "expected_receipt": expected_receipt,
         "items": [
@@ -683,6 +713,7 @@ def plan_document(
         "tool_version": TOOL_VERSION,
         "store": {"id": metadata["store_id"], "path": config["store"]},
         "device": {"id": device_id_for(config, layout), "name": config["device"]},
+        "sync_scope": validate_sync_scope(config.get("sync_scope"), default="all"),
         "include_memories": bool(config.get("include_memories")),
         "expected_receipt": expected_receipt,
         "plan_id": plan_id,
@@ -744,6 +775,9 @@ def load_receipt(store: Path, token: str) -> dict:
         or not isinstance(receipt.get("include_memories"), bool)
     ):
         raise SyncError(f"Receipt {token} has invalid fields.")
+    receipt["sync_scope"] = validate_sync_scope(
+        receipt.get("sync_scope"), default="all"
+    )
     return receipt
 
 
@@ -778,6 +812,10 @@ def verify_expected_receipt(
         raise SyncError(f"Receipt {token} is not the sender device's latest successful handoff.")
     if receipt.get("include_memories") != bool(config.get("include_memories")):
         raise SyncError(f"Receipt {token} was created with a different Memories selection.")
+    if receipt.get("sync_scope") != validate_sync_scope(
+        config.get("sync_scope"), default="all"
+    ):
+        raise SyncError(f"Receipt {token} was created with a different sync scope.")
     actual_tree = shared_tree_hash_for(items)
     if receipt.get("shared_tree_hash") != actual_tree:
         raise SyncError(
@@ -812,6 +850,7 @@ def write_receipt_locked(
         "device_id": device_id_for(config, layout),
         "device": config["device"],
         "plan_id": plan_id,
+        "sync_scope": validate_sync_scope(config.get("sync_scope"), default="all"),
         "include_memories": bool(config.get("include_memories")),
         "shared_tree_hash": shared_tree_hash_for(items),
         "created_at": now_stamp(),
@@ -1026,6 +1065,7 @@ def cmd_create(args: argparse.Namespace, layout: Layout) -> int:
         register_device_locked(store, metadata, config, layout)
     print(f"Created shared store {metadata['store_id']}")
     print(f"Configured {config['device']} at {store}")
+    print(f"Sync scope: {config['sync_scope']}")
     print(f"On another Mac, run: join --store {store} --expect-store-id {metadata['store_id']}")
     print("Next: doctor, status, then sync --plan <PLAN_ID>")
     return 0
@@ -1058,6 +1098,7 @@ def cmd_join(args: argparse.Namespace, layout: Layout) -> int:
         atomic_json_write(path, config)
     print(f"Joined shared store {metadata['store_id']}")
     print(f"Configured {config['device']} at {store}")
+    print(f"Sync scope: {config['sync_scope']}")
     print("Next: doctor, status --expect <RECEIPT>, then sync --plan <PLAN_ID> --expect <RECEIPT>")
     return 0
 
@@ -1083,6 +1124,8 @@ def cmd_configure(args: argparse.Namespace, layout: Layout) -> int:
         config["store_id"] = metadata["store_id"]
     if args.device:
         config["device"] = validate_device_name(args.device)
+    if args.scope:
+        config["sync_scope"] = validate_sync_scope(args.scope)
     if args.include_memories:
         config["include_memories"] = True
     if args.exclude_memories:
@@ -1112,6 +1155,7 @@ def cmd_doctor(args: argparse.Namespace, layout: Layout) -> int:
     print(f"Device ID: {device_id_for(config, layout)}")
     print(f"Store: {store}")
     print(f"Store ID: {metadata['store_id']}")
+    print(f"Sync scope: {validate_sync_scope(config.get('sync_scope'), default='all')}")
     print(f"Memories: {'included' if config['include_memories'] else 'excluded'}")
     total = 0
     for namespace, root in source_specs(layout, config):
@@ -1142,6 +1186,7 @@ def cmd_status(args: argparse.Namespace, layout: Layout) -> int:
         ))
     else:
         print(f"Store ID: {metadata['store_id']}")
+        print(f"Sync scope: {config['sync_scope']}")
         print_plan(items, plan_id, verbose=not args.summary_only)
         if args.expect:
             print(f"Receipt confirmed: {args.expect}")
@@ -1292,6 +1337,7 @@ def execute_sync(
         "store_id": config.get("store_id"),
         "device": config["device"],
         "device_id": device_id_for(config, layout),
+        "sync_scope": validate_sync_scope(config.get("sync_scope"), default="all"),
         "updated_at": stamp,
         "files": new_base,
     })
@@ -1322,6 +1368,7 @@ def cmd_devices(args: argparse.Namespace, layout: Layout) -> int:
         for record in records:
             print(
                 f"{record['name']}  {record['device_id']}  "
+                f"scope={record.get('sync_scope') or 'all'}  "
                 f"last sync={record.get('last_sync_at') or 'never'}  "
                 f"result={record.get('last_result') or 'not yet synced'}"
             )
@@ -1367,6 +1414,7 @@ def create_snapshot(layout: Layout, config: dict, kind: str) -> tuple[str, Path,
             "store_id": config.get("store_id"),
             "device": config["device"],
             "device_id": device_id_for(config, layout),
+            "sync_scope": validate_sync_scope(config.get("sync_scope"), default="all"),
             "include_memories": bool(config.get("include_memories")),
             "files": manifest,
         }
@@ -1417,6 +1465,9 @@ def load_snapshot(
     if not isinstance(files, dict) or len(files) > MAX_TOTAL_FILES:
         raise SyncError(f"Snapshot file list is invalid: {snapshot_id}")
     snapshot_config = dict(config)
+    snapshot_config["sync_scope"] = validate_sync_scope(
+        manifest.get("sync_scope"), default="all"
+    )
     snapshot_config["include_memories"] = bool(manifest.get("include_memories"))
     total = 0
     for rel, expected_hash in sorted(files.items()):
@@ -1635,6 +1686,7 @@ def execute_resolve(
         "store_id": config.get("store_id"),
         "device": config["device"],
         "device_id": device_id_for(config, layout),
+        "sync_scope": validate_sync_scope(config.get("sync_scope"), default="all"),
         "updated_at": stamp,
     })
     atomic_json_write(state_path(layout), state)
@@ -1678,6 +1730,7 @@ def parser() -> argparse.ArgumentParser:
     create = sub.add_parser("create", help="create a new shared store on the first Mac")
     create.add_argument("--store", required=True)
     create.add_argument("--device")
+    create.add_argument("--scope", choices=VALID_SYNC_SCOPES, default="skills")
     create.add_argument("--include-memories", action="store_true")
     create.add_argument("--force", action="store_true")
 
@@ -1685,18 +1738,21 @@ def parser() -> argparse.ArgumentParser:
     join.add_argument("--store", required=True)
     join.add_argument("--device")
     join.add_argument("--expect-store-id", required=True)
+    join.add_argument("--scope", choices=VALID_SYNC_SCOPES, default="skills")
     join.add_argument("--include-memories", action="store_true")
     join.add_argument("--force", action="store_true")
 
     init = sub.add_parser("init", help="legacy setup command; prefer create or join")
     init.add_argument("--store", required=True)
     init.add_argument("--device")
+    init.add_argument("--scope", choices=VALID_SYNC_SCOPES, default="skills")
     init.add_argument("--include-memories", action="store_true")
     init.add_argument("--force", action="store_true")
 
     configure = sub.add_parser("configure", help="update local configuration")
     configure.add_argument("--store")
     configure.add_argument("--device")
+    configure.add_argument("--scope", choices=VALID_SYNC_SCOPES)
     memory = configure.add_mutually_exclusive_group()
     memory.add_argument("--include-memories", action="store_true")
     memory.add_argument("--exclude-memories", action="store_true")
