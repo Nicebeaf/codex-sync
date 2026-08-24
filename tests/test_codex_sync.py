@@ -72,6 +72,11 @@ class CodexSyncTest(unittest.TestCase):
             sync_args.extend(["--expect", expect_receipt])
         return self.run_cli(home, *sync_args, expected=expected)
 
+    def quick_sync(
+        self, home: Path, *, expected: int = 0
+    ) -> subprocess.CompletedProcess[str]:
+        return self.run_cli(home, "sync-now", expected=expected)
+
     def runtime_context(self):
         runtime = load_runtime()
         user_home = self.mini.resolve()
@@ -415,6 +420,66 @@ class CodexSyncTest(unittest.TestCase):
         )
         self.assertIn("not currently conflicted", result.stderr)
 
+    def test_sync_now_handles_three_step_handoffs_without_manual_ids(self) -> None:
+        mini_skill = self.mini / ".agents/skills/mini/SKILL.md"
+        self.write(mini_skill, "from-mini\n")
+        metadata = self.create_device(self.mini, "mac-mini")
+        first = self.quick_sync(self.mini)
+        self.assertIn("Automatic receipt: first sync", first.stdout)
+        self.assertIn("Quick sync complete", first.stdout)
+
+        self.run_cli(
+            self.book,
+            "join", "--store", str(self.shared), "--device", "windows-pc",
+            "--expect-store-id", metadata["store_id"],
+        )
+        second = self.quick_sync(self.book)
+        self.assertIn("Automatic receipt:", second.stdout)
+        self.assertIn("from mac-mini", second.stdout)
+        self.assertEqual(
+            "from-mini\n",
+            (self.book / ".agents/skills/mini/SKILL.md").read_text(encoding="utf-8"),
+        )
+
+        book_skill = self.book / ".codex/skills/windows/SKILL.md"
+        self.write(book_skill, "from-windows\n")
+        third = self.quick_sync(self.book)
+        self.assertIn("Latest Store activity is already from this device", third.stdout)
+        fourth = self.quick_sync(self.mini)
+        self.assertIn("from windows-pc", fourth.stdout)
+        self.assertEqual(
+            "from-windows\n",
+            (self.mini / ".codex/skills/windows/SKILL.md").read_text(encoding="utf-8"),
+        )
+
+    def test_sync_now_stops_before_writes_when_same_skill_conflicts(self) -> None:
+        mini_skill = self.mini / ".agents/skills/demo/SKILL.md"
+        self.write(mini_skill, "baseline\n")
+        metadata = self.create_device(self.mini, "mac-mini")
+        self.quick_sync(self.mini)
+        self.run_cli(
+            self.book,
+            "join", "--store", str(self.shared), "--device", "windows-pc",
+            "--expect-store-id", metadata["store_id"],
+        )
+        self.quick_sync(self.book)
+
+        book_skill = self.book / ".agents/skills/demo/SKILL.md"
+        self.write(book_skill, "windows-edit\n")
+        self.write(mini_skill, "mac-edit\n")
+        self.quick_sync(self.mini)
+        shared_skill = self.shared / "shared/agents/skills/demo/SKILL.md"
+        receipts_before = sorted((self.shared / "receipts").glob("*.json"))
+        state_before = (self.book / ".codex-sync/state.json").read_bytes()
+
+        result = self.quick_sync(self.book, expected=2)
+        self.assertIn("Quick sync stopped before changing selected files", result.stderr)
+        self.assertIn("CONFLICT agents/skills/demo/SKILL.md", result.stderr)
+        self.assertEqual("windows-edit\n", book_skill.read_text(encoding="utf-8"))
+        self.assertEqual("mac-edit\n", shared_skill.read_text(encoding="utf-8"))
+        self.assertEqual(state_before, (self.book / ".codex-sync/state.json").read_bytes())
+        self.assertEqual(receipts_before, sorted((self.shared / "receipts").glob("*.json")))
+
     def test_exclusions_and_memories_opt_in(self) -> None:
         self.write(self.mini / ".codex/AGENTS.md", "rules\n")
         self.write(self.mini / ".codex/rules/default.rules", "allow\n")
@@ -448,8 +513,9 @@ class CodexSyncTest(unittest.TestCase):
         self.reviewed_sync(self.mini)
         self.assertTrue((shared_root / "codex/memories/MEMORY.md").exists())
         self.assertFalse((shared_root / "codex/memories/memories_1.sqlite").exists())
-        self.assertEqual(0o700, self.shared.stat().st_mode & 0o777)
-        self.assertEqual(0o700, (self.mini / ".codex-sync").stat().st_mode & 0o777)
+        if os.name != "nt":
+            self.assertEqual(0o700, self.shared.stat().st_mode & 0o777)
+            self.assertEqual(0o700, (self.mini / ".codex-sync").stat().st_mode & 0o777)
 
     def test_skills_scope_excludes_device_rules_on_push_and_pull(self) -> None:
         self.write(self.mini / ".codex/skills/local/SKILL.md", "local skill\n")
@@ -572,6 +638,7 @@ class CodexSyncTest(unittest.TestCase):
         self.reviewed_sync(self.mini)
         self.assertTrue((self.shared / "shared/agents/skills/demo/SKILL.md").exists())
 
+    @unittest.skipIf(os.name == "nt", "creating symlinks may require Windows Developer Mode")
     def test_shared_lock_symlink_is_rejected_without_reading_target(self) -> None:
         skill = self.mini / ".agents/skills/demo/SKILL.md"
         self.write(skill, "content\n")
@@ -613,6 +680,7 @@ class CodexSyncTest(unittest.TestCase):
         self.assertTrue((self.shared / "shared/codex/skills/selected/SKILL.md").exists())
         self.assertFalse((self.shared / "shared/codex/skills/wrong/SKILL.md").exists())
 
+    @unittest.skipIf(os.name == "nt", "creating symlinks may require Windows Developer Mode")
     def test_atomic_copy_rejects_source_replaced_by_symlink(self) -> None:
         runtime = load_runtime()
         source_root = self.root / "source"
