@@ -116,6 +116,10 @@ class CodexSyncTest(unittest.TestCase):
 
     def test_create_join_store_identity_and_device_registry(self) -> None:
         metadata = self.create_device(self.mini, "mac-mini")
+        config = json.loads(
+            (self.mini / ".codex-sync/config.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual("skills", config["sync_scope"])
         wrong = self.root / "wrong-transport/CodexSync"
         result = self.run_cli(
             self.book,
@@ -135,6 +139,7 @@ class CodexSyncTest(unittest.TestCase):
         devices = json.loads(self.run_cli(self.book, "devices", "--json").stdout)["devices"]
         self.assertEqual({"mac-mini", "macbook"}, {item["name"] for item in devices})
         self.assertEqual(2, len({item["device_id"] for item in devices}))
+        self.assertEqual({"skills"}, {item["sync_scope"] for item in devices})
 
     def test_join_rejects_wrong_store_id_without_local_writes(self) -> None:
         metadata = self.create_device(self.mini, "mac-mini")
@@ -175,6 +180,7 @@ class CodexSyncTest(unittest.TestCase):
             (self.mini / ".codex-sync/config.json").read_text(encoding="utf-8")
         )
         self.assertEqual(upgraded["store_id"], local_config["store_id"])
+        self.assertEqual("all", local_config["sync_scope"])
         self.assertEqual(
             "legacy-data\n",
             (self.shared / "shared/agents/skills/demo/SKILL.md").read_text(encoding="utf-8"),
@@ -217,7 +223,7 @@ class CodexSyncTest(unittest.TestCase):
         self.assertEqual(before_shared, shared_skill.read_bytes())
 
     def test_status_json_is_stable_and_read_only(self) -> None:
-        self.write(self.mini / ".codex/AGENTS.md", "portable rules\n")
+        self.write(self.mini / ".codex/skills/demo/SKILL.md", "portable skill\n")
         metadata = self.create_device(self.mini, "mac-mini")
         before = self.fingerprint(self.root)
         first = self.run_cli(self.mini, "status", "--json")
@@ -229,6 +235,7 @@ class CodexSyncTest(unittest.TestCase):
         self.assertEqual(first.stdout, second.stdout)
         document = json.loads(first.stdout)
         self.assertEqual(metadata["store_id"], document["store"]["id"])
+        self.assertEqual("skills", document["sync_scope"])
         self.assertEqual(1, document["counts"]["push"])
         self.assertEqual("upload_to_shared_folder", document["items"][0]["direction"])
 
@@ -425,8 +432,8 @@ class CodexSyncTest(unittest.TestCase):
         self.reviewed_sync(self.mini)
 
         shared_root = self.shared / "shared"
-        self.assertTrue((shared_root / "codex/AGENTS.md").exists())
-        self.assertTrue((shared_root / "codex/rules/default.rules").exists())
+        self.assertFalse((shared_root / "codex/AGENTS.md").exists())
+        self.assertFalse((shared_root / "codex/rules/default.rules").exists())
         self.assertTrue((shared_root / "codex/skills/custom/SKILL.md").exists())
         self.assertFalse((shared_root / "codex/skills/.system/private.txt").exists())
         self.assertFalse((shared_root / "codex/skills/custom/auth.json").exists())
@@ -443,6 +450,91 @@ class CodexSyncTest(unittest.TestCase):
         self.assertFalse((shared_root / "codex/memories/memories_1.sqlite").exists())
         self.assertEqual(0o700, self.shared.stat().st_mode & 0o777)
         self.assertEqual(0o700, (self.mini / ".codex-sync").stat().st_mode & 0o777)
+
+    def test_skills_scope_excludes_device_rules_on_push_and_pull(self) -> None:
+        self.write(self.mini / ".codex/skills/local/SKILL.md", "local skill\n")
+        self.write(self.mini / ".codex/rules/default.rules", "local rule\n")
+        self.write(self.mini / ".codex/AGENTS.md", "local agents\n")
+        metadata = self.create_device(self.mini, "mac-mini")
+        first = self.reviewed_sync(self.mini)
+
+        shared_root = self.shared / "shared"
+        self.assertTrue((shared_root / "codex/skills/local/SKILL.md").exists())
+        self.assertFalse((shared_root / "codex/rules/default.rules").exists())
+        self.assertFalse((shared_root / "codex/AGENTS.md").exists())
+
+        self.write(shared_root / "codex/skills/remote/SKILL.md", "remote skill\n")
+        self.write(shared_root / "codex/rules/remote.rules", "remote rule\n")
+        self.write(shared_root / "codex/AGENTS.md", "remote agents\n")
+        self.run_cli(
+            self.book,
+            "join", "--store", str(self.shared), "--device", "macbook",
+            "--expect-store-id", metadata["store_id"],
+        )
+        self.reviewed_sync(self.book)
+
+        self.assertTrue((self.book / ".codex/skills/remote/SKILL.md").exists())
+        self.assertFalse((self.book / ".codex/rules/remote.rules").exists())
+        self.assertFalse((self.book / ".codex/AGENTS.md").exists())
+        self.assertRegex(self.receipt_from(first), r"^[a-f0-9]{16}$")
+
+    def test_all_scope_preserves_legacy_rules_and_agents_behavior(self) -> None:
+        self.write(self.mini / ".codex/skills/demo/SKILL.md", "skill\n")
+        self.write(self.mini / ".codex/rules/default.rules", "rule\n")
+        self.write(self.mini / ".codex/AGENTS.md", "agents\n")
+        metadata = self.create_device(self.mini, "mac-mini", "--scope", "all")
+        receipt = self.receipt_from(self.reviewed_sync(self.mini))
+
+        shared_root = self.shared / "shared"
+        self.assertTrue((shared_root / "codex/skills/demo/SKILL.md").exists())
+        self.assertTrue((shared_root / "codex/rules/default.rules").exists())
+        self.assertTrue((shared_root / "codex/AGENTS.md").exists())
+
+        self.run_cli(
+            self.book,
+            "join", "--store", str(self.shared), "--device", "macbook",
+            "--expect-store-id", metadata["store_id"], "--scope", "all",
+        )
+        self.reviewed_sync(self.book, expect_receipt=receipt)
+        self.assertEqual(
+            "rule\n",
+            (self.book / ".codex/rules/default.rules").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            "agents\n",
+            (self.book / ".codex/AGENTS.md").read_text(encoding="utf-8"),
+        )
+
+    def test_scope_change_is_non_destructive_and_changes_plan_identity(self) -> None:
+        self.write(self.mini / ".codex/skills/demo/SKILL.md", "skill\n")
+        self.write(self.mini / ".codex/rules/default.rules", "rule\n")
+        self.write(self.mini / ".codex/AGENTS.md", "agents\n")
+        self.create_device(self.mini, "mac-mini", "--scope", "all")
+        self.reviewed_sync(self.mini)
+        all_plan = json.loads(self.run_cli(self.mini, "status", "--json").stdout)
+
+        self.run_cli(self.mini, "configure", "--scope", "skills")
+        skills_plan = json.loads(self.run_cli(self.mini, "status", "--json").stdout)
+        self.assertNotEqual(all_plan["plan_id"], skills_plan["plan_id"])
+        self.assertEqual("skills", skills_plan["sync_scope"])
+        self.assertTrue((self.mini / ".codex/rules/default.rules").exists())
+        self.assertTrue((self.mini / ".codex/AGENTS.md").exists())
+        self.assertTrue((self.shared / "shared/codex/rules/default.rules").exists())
+        self.assertTrue((self.shared / "shared/codex/AGENTS.md").exists())
+
+    def test_receipt_rejects_different_sync_scope(self) -> None:
+        self.write(self.mini / ".codex/skills/demo/SKILL.md", "skill\n")
+        metadata = self.create_device(self.mini, "mac-mini", "--scope", "all")
+        receipt = self.receipt_from(self.reviewed_sync(self.mini))
+        self.run_cli(
+            self.book,
+            "join", "--store", str(self.shared), "--device", "macbook",
+            "--expect-store-id", metadata["store_id"],
+        )
+        result = self.run_cli(
+            self.book, "status", "--expect", receipt, expected=1
+        )
+        self.assertIn("different sync scope", result.stderr)
 
     def test_secret_detection_covers_single_file_root_and_full_file(self) -> None:
         self.write(self.mini / ".codex/AGENTS.md", "token=1234567890abcdef\n")

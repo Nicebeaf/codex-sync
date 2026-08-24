@@ -82,7 +82,7 @@ class PackageTest(unittest.TestCase):
 
         manifest = json.loads((plugin / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(entry["name"], manifest["name"])
-        self.assertEqual("0.2.0", manifest["version"])
+        self.assertEqual("0.3.0", manifest["version"])
 
         with tempfile.TemporaryDirectory() as temporary:
             installed = Path(temporary) / "cache/codex-sync/local"
