@@ -5,18 +5,18 @@
 ## Recommended two-Mac setup
 
 1. Choose a new or empty private folder such as `~/Library/Mobile Documents/com~apple~CloudDocs/CodexSync` on the Mac mini.
-2. Run `create` on the Mac mini with device name `mac-mini`. Save the printed Store ID.
+2. Run `create --scope skills` on the Mac mini with device name `mac-mini`. Save the printed Store ID.
 3. Run `doctor`, then `status --json` or human-readable `status`. Review the exact Plan ID before `sync --plan`.
 4. Save the receipt printed by a successful sync.
 5. Wait until the private transport has fully propagated to the MacBook.
-6. Run `join` on the MacBook with device name `macbook` and `--expect-store-id` set to the first Mac's Store ID.
+6. Run `join --scope skills` on the MacBook with device name `macbook` and `--expect-store-id` set to the first Mac's Store ID.
 7. Run `devices`, `doctor`, and `status --json --expect <RECEIPT>`. Review initial conflicts before applying the new Plan ID.
 8. Run sync on only one Mac at a time. Carry the latest receipt to the next Mac on every handoff.
 
 The store can be any absolute path. The literal value `icloud` resolves to the current user's standard iCloud Drive location:
 
 ```bash
-python3 scripts/codex_sync.py create --store icloud --device mac-mini
+python3 scripts/codex_sync.py create --store icloud --device mac-mini --scope skills
 ```
 
 The first setup prints a UUID-shaped Store ID. On the other Mac:
@@ -25,7 +25,8 @@ The first setup prints a UUID-shaped Store ID. On the other Mac:
 python3 scripts/codex_sync.py join \
   --store icloud \
   --device macbook \
-  --expect-store-id "<STORE_ID>"
+  --expect-store-id "<STORE_ID>" \
+  --scope skills
 ```
 
 Store ID verifies folder identity; it is not a secret. A receipt verifies a specific completed shared-tree manifest and should be copied exactly:
@@ -39,7 +40,7 @@ python3 scripts/codex_sync.py sync --plan "<PLAN_ID>" --expect "<RECEIPT>"
 
 - `create`: create a new Store, initialize its identity, and configure the first Mac.
 - `join`: configure another Mac for an existing Store; use `--expect-store-id` to prevent joining the wrong folder.
-- `configure`: change the store, device name, or Memories opt-in without discarding comparison state unless the store changes.
+- `configure`: change the store, device name, `skills|all` scope, or Memories opt-in without discarding comparison state unless the store changes.
 - `doctor`: verify configuration, path separation, access, and selected roots.
 - `status`: compute actions without changing files; `--json` exposes the full plan and Plan ID for agent use.
 - `sync --plan`: apply only the reviewed Plan ID, back up overwritten files, preserve conflicts, and update comparison state.
@@ -58,6 +59,19 @@ python3 scripts/codex_sync.py sync --plan "<PLAN_ID>" --expect "<RECEIPT>"
 - Re-run `status` after any conflict resolution, restore, manual edit, or receipt mismatch.
 - Never bypass `--expect` because a cloud folder appears present in Finder; receipt mismatch means the expected manifest is not yet visible.
 - The Store lock protects one mounted view. Receipt verification handles handoffs, but both Macs must still avoid simultaneous sync.
+- Receipts bind the `skills|all` scope. Both Macs must select the same scope for a handoff.
+
+## Scope and 0.2 migration
+
+New configurations default to `skills`, selecting only `~/.agents/skills` and `~/.codex/skills`. Device-level `~/.codex/rules` and `~/.codex/AGENTS.md` are selected only by `--scope all`.
+
+Configurations created by 0.2 retain `all` so upgrading does not silently change an existing setup. After both Macs update to 0.3, switch each one to Skills-only sharing with:
+
+```bash
+python3 scripts/codex_sync.py configure --scope skills
+```
+
+This changes selection only. It does not delete files from either Mac or the Store.
 
 ## Snapshot recovery
 
