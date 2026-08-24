@@ -64,7 +64,7 @@ codex plugin marketplace add ./codex-sync
 运行仓库根目录的安装脚本。它会把独立 Skill 复制到 `~/.codex/skills/codex-sync`，删除克隆目录后仍可使用：
 
 ```bash
-./install.sh
+sh install.sh
 ```
 
 如果 `$codex-sync` 没有立即出现，请重启 Codex。

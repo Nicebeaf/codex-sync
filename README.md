@@ -64,7 +64,7 @@ codex plugin marketplace add ./codex-sync
 Run the repository installer. It copies the standalone Skill to `~/.codex/skills/codex-sync`, so the installed copy survives removal of the clone:
 
 ```bash
-./install.sh
+sh install.sh
 ```
 
 Restart Codex if `$codex-sync` does not appear immediately.
