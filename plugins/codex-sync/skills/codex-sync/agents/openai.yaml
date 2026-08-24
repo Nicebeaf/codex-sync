@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Sync"
+  short_description: "Private, plan-bound Codex sync between Macs"
+  default_prompt: "Use $codex-sync with my own private shared folder. Review status as JSON, apply only its Plan ID, verify the handoff receipt, and never include credentials or live Codex state."
