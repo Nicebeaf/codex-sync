@@ -21,7 +21,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 VERSION = 1
-TOOL_VERSION = "0.3.0"
+TOOL_VERSION = "0.4.0"
 VALID_SYNC_SCOPES = ("skills", "all")
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_TOTAL_FILES = 10_000
@@ -105,7 +105,7 @@ class SharedLock:
             owner_path = self.path / "owner.json"
             owner = json_read(owner_path, {}) if owner_path.exists() and not owner_path.is_symlink() else {}
             detail = f" ({owner.get('device')} at {owner.get('created_at')})" if owner else ""
-            raise SyncError(f"Shared store is locked{detail}. Do not sync both Macs at once.") from exc
+            raise SyncError(f"Shared store is locked{detail}. Do not sync both devices at once.") from exc
         self.acquired = True
         atomic_json_write(self.path / "owner.json", {
             "version": VERSION,
@@ -250,13 +250,36 @@ def iter_tree(root: Path) -> Iterable[Path]:
 
 def resolve_user_path(raw: str, user_home: Path) -> Path:
     if raw == "icloud":
+        if sys.platform != "darwin":
+            raise SyncError(
+                "The 'icloud' shortcut is available only on macOS. "
+                "Use an absolute shared-folder path on this device."
+            )
         return user_home / "Library/Mobile Documents/com~apple~CloudDocs/CodexSync"
+    if raw == "onedrive":
+        one_drive = next(
+            (
+                os.environ.get(name)
+                for name in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial")
+                if os.environ.get(name)
+            ),
+            None,
+        )
+        if not one_drive:
+            raise SyncError(
+                "The 'onedrive' shortcut is not configured. "
+                "Use the absolute path to a shared OneDrive folder."
+            )
+        return (Path(one_drive) / "CodexSync").resolve(strict=False)
     expanded = raw.replace("$HOME", str(user_home))
     if expanded.startswith("~/"):
         expanded = str(user_home / expanded[2:])
     path = Path(expanded)
     if not path.is_absolute():
-        raise SyncError("Shared store must be an absolute path or the literal 'icloud'.")
+        raise SyncError(
+            "Shared store must be an absolute path or a supported shortcut: "
+            "'icloud' on macOS or 'onedrive' when OneDrive is configured."
+        )
     return path.resolve(strict=False)
 
 
@@ -303,7 +326,7 @@ def legacy_store_id(store: Path, metadata: dict) -> str:
 def load_store_metadata(store: Path) -> dict:
     path = store_metadata_path(store)
     if not path.exists() or path.is_symlink() or not path.is_file():
-        raise SyncError(f"Shared store is not initialized: {path}. Use create on the first Mac.")
+        raise SyncError(f"Shared store is not initialized: {path}. Use create on the first device.")
     metadata = json_read(path, {})
     if metadata.get("kind") != "codex-sync" or metadata.get("version") != VERSION:
         raise SyncError(f"Shared store metadata is invalid or unsupported: {path}")
@@ -371,7 +394,7 @@ def configured_store(layout: Layout, config: dict) -> tuple[Path, dict]:
     if configured_id and configured_id != metadata["store_id"]:
         raise SyncError(
             "The shared folder now identifies as a different Codex Sync store. "
-            "Refusing to mix its data with this Mac."
+            "Refusing to mix its data with this device."
         )
     shared_root = store / "shared"
     if shared_root.is_symlink() or not shared_root.is_dir():
@@ -498,8 +521,8 @@ def load_config(layout: Layout) -> dict:
     config = json_read(config_path(layout), {})
     if not config:
         raise SyncError(
-            "Not configured. Run 'create --store <path> --device <name>' on the first Mac "
-            "or 'join --store <path> --device <name>' on another Mac."
+            "Not configured. Run 'create --store <path> --device <name>' on the first device "
+            "or 'join --store <path> --device <name>' on another device."
         )
     if config.get("version") != VERSION:
         raise SyncError("Unsupported local configuration version.")
@@ -704,7 +727,7 @@ def plan_document(
 ) -> dict:
     direction = {
         "push": "upload_to_shared_folder",
-        "pull": "download_to_this_mac",
+        "pull": "download_to_this_device",
         "conflict": "not_overwritten",
         "same": "no_change",
     }
@@ -823,6 +846,34 @@ def verify_expected_receipt(
             "Wait for cloud sync; no files were changed."
         )
     return receipt
+
+
+def automatic_expected_receipt(
+    store: Path,
+    config: dict,
+    layout: Layout,
+) -> tuple[str | None, dict | None]:
+    """Select the newest completed handoff without copying a token manually."""
+    records = [
+        record
+        for record in read_devices(store)
+        if isinstance(record.get("last_sync_at"), str)
+    ]
+    if not records:
+        return None, None
+    latest = max(
+        records,
+        key=lambda record: (record.get("last_sync_at", ""), record["device_id"]),
+    )
+    if latest.get("device_id") == device_id_for(config, layout):
+        return None, latest
+    if latest.get("last_result") != "success" or not latest.get("last_receipt"):
+        raise SyncError(
+            f"The latest Store activity came from {latest['name']} with result "
+            f"{latest.get('last_result') or 'incomplete'}. Run sync-now on that device "
+            "after resolving its conflicts, then wait for the shared folder to finish syncing."
+        )
+    return latest["last_receipt"], latest
 
 
 def write_receipt_locked(
@@ -989,7 +1040,7 @@ def print_plan(items: list[PlanItem], plan_id: str, verbose: bool = True) -> Non
     counts = plan_counts(items)
     labels = {
         "push": "UPLOAD  to shared folder",
-        "pull": "DOWNLOAD to this Mac",
+        "pull": "DOWNLOAD to this device",
         "conflict": "CONFLICT not overwritten",
     }
     for item in items:
@@ -1041,7 +1092,7 @@ def cmd_create(args: argparse.Namespace, layout: Layout) -> int:
         entries = [entry for entry in store.iterdir() if entry.name != ".codex-sync.lock"]
         if entries:
             if store_metadata_path(store).exists():
-                raise SyncError("This shared store already exists. Use join on this Mac.")
+                raise SyncError("This shared store already exists. Use join on this device.")
             raise SyncError("Create requires a new or empty shared folder; refusing to reuse its contents.")
     mkdir_new_private(store)
     device_name = validate_device_name(args.device)
@@ -1066,8 +1117,8 @@ def cmd_create(args: argparse.Namespace, layout: Layout) -> int:
     print(f"Created shared store {metadata['store_id']}")
     print(f"Configured {config['device']} at {store}")
     print(f"Sync scope: {config['sync_scope']}")
-    print(f"On another Mac, run: join --store {store} --expect-store-id {metadata['store_id']}")
-    print("Next: doctor, status, then sync --plan <PLAN_ID>")
+    print(f"On another device, run: join --store {store} --expect-store-id {metadata['store_id']}")
+    print("Next: run doctor once, then use sync-now for routine syncing")
     return 0
 
 
@@ -1099,7 +1150,7 @@ def cmd_join(args: argparse.Namespace, layout: Layout) -> int:
     print(f"Joined shared store {metadata['store_id']}")
     print(f"Configured {config['device']} at {store}")
     print(f"Sync scope: {config['sync_scope']}")
-    print("Next: doctor, status --expect <RECEIPT>, then sync --plan <PLAN_ID> --expect <RECEIPT>")
+    print("Next: run doctor once, then use sync-now for routine syncing")
     return 0
 
 
@@ -1251,7 +1302,7 @@ def cmd_sync(args: argparse.Namespace, layout: Layout) -> int:
                 receipt=token,
             )
             print(f"Receipt: {token}")
-            print(f"On the next Mac use: status --expect {token}")
+            print(f"On the next device use: status --expect {token}")
         else:
             register_device_locked(
                 store,
@@ -1346,6 +1397,85 @@ def execute_sync(
         print(f"Conflict copies: {conflict_root}")
         return 2
     return 0
+
+
+def cmd_sync_now(args: argparse.Namespace, layout: Layout) -> int:
+    """Perform one safe routine handoff without manually copying Plan or Receipt IDs."""
+    del args
+    config = load_config(layout)
+    store, metadata = configured_store(layout, config)
+    shared_root = store / "shared"
+    expected_receipt, sender = automatic_expected_receipt(store, config, layout)
+    items, _, _, _ = plan_sync(layout, config)
+    verify_expected_receipt(
+        store, metadata, config, items, layout, expected_receipt
+    )
+    plan_id = plan_id_for(items, metadata, config, expected_receipt)
+    print(f"Store ID: {metadata['store_id']}")
+    print(f"Sync scope: {config['sync_scope']}")
+    if expected_receipt and sender:
+        print(f"Automatic receipt: {expected_receipt} from {sender['name']}")
+    elif sender:
+        print(f"Latest Store activity is already from this device: {sender['name']}")
+    else:
+        print("Automatic receipt: first sync; no previous handoff required")
+    print_plan(items, plan_id, verbose=True)
+    conflicts = [item for item in items if item.action == "conflict"]
+    if conflicts:
+        print("Quick sync stopped before changing selected files.", file=sys.stderr)
+        for item in conflicts:
+            print(f"CONFLICT {item.rel}", file=sys.stderr)
+        print(
+            "Resolve each conflict explicitly, then run sync-now again.",
+            file=sys.stderr,
+        )
+        return 2
+
+    with SharedLock(store, config["device"]):
+        current_receipt, _ = automatic_expected_receipt(store, config, layout)
+        if current_receipt != expected_receipt:
+            raise SyncError(
+                "The latest handoff changed while quick sync was preparing. "
+                "No selected files were changed; wait for the shared folder and run sync-now again."
+            )
+        items, local_paths, shared_paths, state = plan_sync(layout, config)
+        verify_expected_receipt(
+            store, metadata, config, items, layout, current_receipt
+        )
+        current_plan_id = plan_id_for(items, metadata, config, current_receipt)
+        if current_plan_id != plan_id:
+            raise SyncError(
+                "The sync plan changed during final verification. "
+                "No selected files were changed; run sync-now again."
+            )
+        if any(item.action == "conflict" for item in items):
+            raise SyncError(
+                "A conflict appeared during final verification. "
+                "No selected files were changed; run sync-now again."
+            )
+        metadata = ensure_store_metadata_locked(store)
+        persist_config_identity(layout, config, metadata)
+        result = execute_sync(
+            layout, config, shared_root, items, local_paths, shared_paths, state
+        )
+        if result != 0:
+            raise SyncError("Quick sync stopped unexpectedly before creating a receipt.")
+        token = write_receipt_locked(
+            store, metadata, config, layout, current_plan_id
+        )
+        register_device_locked(
+            store,
+            metadata,
+            config,
+            layout,
+            sync_result="success",
+            plan_id=current_plan_id,
+            receipt=token,
+        )
+        print("Quick sync complete")
+        print(f"Receipt: {token}")
+        print("Wait for the shared folder to finish syncing, then run sync-now on the other device.")
+        return 0
 
 
 def cmd_devices(args: argparse.Namespace, layout: Layout) -> int:
@@ -1574,7 +1704,7 @@ def cmd_restore(args: argparse.Namespace, layout: Layout) -> int:
     }, 24)
     if args.dry_run:
         for rel in sorted(files):
-            print(f"RESTORE to this Mac       {rel}")
+            print(f"RESTORE to this device    {rel}")
         print(f"Dry run: {len(files)} file(s); no files changed")
         print(f"Restore Plan ID: {restore_plan}")
         return 0
@@ -1727,14 +1857,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--state-home", help=argparse.SUPPRESS)
     sub = result.add_subparsers(dest="command", required=True)
 
-    create = sub.add_parser("create", help="create a new shared store on the first Mac")
+    create = sub.add_parser("create", help="create a new shared store on the first device")
     create.add_argument("--store", required=True)
     create.add_argument("--device")
     create.add_argument("--scope", choices=VALID_SYNC_SCOPES, default="skills")
     create.add_argument("--include-memories", action="store_true")
     create.add_argument("--force", action="store_true")
 
-    join = sub.add_parser("join", help="join an existing shared store on another Mac")
+    join = sub.add_parser("join", help="join an existing shared store on another device")
     join.add_argument("--store", required=True)
     join.add_argument("--device")
     join.add_argument("--expect-store-id", required=True)
@@ -1766,6 +1896,10 @@ def parser() -> argparse.ArgumentParser:
     sync.add_argument("--dry-run", action="store_true")
     sync.add_argument("--plan", metavar="PLAN_ID")
     sync.add_argument("--expect", metavar="RECEIPT")
+    sub.add_parser(
+        "sync-now",
+        help="automatically verify the latest handoff and safely sync now",
+    )
     sub.add_parser("backup", help="create a local backup of selected files")
     sub.add_parser("snapshot", help="create a restorable local snapshot")
     history = sub.add_parser("history", help="list local snapshots")
@@ -1774,7 +1908,7 @@ def parser() -> argparse.ArgumentParser:
     restore.add_argument("--id", required=True)
     restore.add_argument("--dry-run", action="store_true")
     restore.add_argument("--plan", metavar="RESTORE_PLAN_ID")
-    devices = sub.add_parser("devices", help="show Macs joined to this shared store")
+    devices = sub.add_parser("devices", help="show devices joined to this shared store")
     devices.add_argument("--json", action="store_true")
     resolve = sub.add_parser("resolve", help="resolve exactly one conflicting file")
     resolve.add_argument("--path", required=True)
@@ -1795,6 +1929,7 @@ def main(argv: list[str] | None = None) -> int:
         "doctor": cmd_doctor,
         "status": cmd_status,
         "sync": cmd_sync,
+        "sync-now": cmd_sync_now,
         "backup": cmd_backup,
         "snapshot": cmd_snapshot,
         "history": cmd_history,
