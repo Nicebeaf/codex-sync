@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Codex Sync 是一个开源 Codex plugin，用于在多台 Mac 之间安全共享用户自己创建的 Codex 配置。它只使用**你自己选择并控制**的私有共享目录，例如 iCloud Drive、Dropbox、Syncthing 或 NAS。
+Codex Sync 是一个开源 Codex plugin，用于在多台 Mac 之间安全共享用户自己创建的 Skills。它只使用**你自己选择并控制**的私有共享目录，例如 iCloud Drive、Dropbox、Syncthing 或 NAS。
 
 Codex Sync 不提供云服务、共享账号或作者运营的存储空间。每个人都使用自己的私有共享目录；同步内容不会发送给作者。
 
@@ -17,18 +17,19 @@ Codex Sync 不提供云服务、共享账号或作者运营的存储空间。每
 
 ## 同步范围
 
-默认白名单：
+新配置默认使用 `skills` 范围，只共享：
 
 - `~/.agents/skills`
 - `~/.codex/skills`，排除 `.system`
-- `~/.codex/rules`
-- `~/.codex/AGENTS.md`
+
+`~/.codex/rules` 和 `~/.codex/AGENTS.md` 属于设备级配置，默认不参与共享，也不会因为另一台电脑的更新而被替换。只有显式选择 `--scope all` 才会同步它们。
 
 Memories 必须显式开启。已知凭据文件名、疑似密钥内容、任务会话、历史记录、数据库、日志、插件缓存、浏览器状态、生成图片、自动任务、设备标识和软链接会被排除。用户仍须检查 `status`，不得把凭据保存在 Skill 目录内。
 
 ## 安全机制
 
 - 三方比较可以区分本机修改、共享目录修改和双方同时修改。
+- Skills 采用双向并集：任一台 Mac 新增的 Skill 都会进入共享集合；删除不会传播。
 - `status` 会生成可审核的 Plan ID；`sync --plan` 只执行这一份计划，计划变化就停止。
 - 固定的 Store ID 可防止设备误加入另一个同名共享目录。
 - Receipt 会绑定一次成功同步与共享目录清单，另一台 Mac 可据此确认预期更新已经可见。
@@ -79,7 +80,7 @@ sh install.sh
 
 ```bash
 SYNC=plugins/codex-sync/skills/codex-sync/scripts/codex_sync.py
-python3 "$SYNC" create --store icloud --device mac-mini
+python3 "$SYNC" create --store icloud --device mac-mini --scope skills
 python3 "$SYNC" doctor
 ```
 
@@ -104,7 +105,8 @@ SYNC=plugins/codex-sync/skills/codex-sync/scripts/codex_sync.py
 python3 "$SYNC" join \
   --store icloud \
   --device macbook \
-  --expect-store-id "<STORE_ID>"
+  --expect-store-id "<STORE_ID>" \
+  --scope skills
 python3 "$SYNC" doctor
 python3 "$SYNC" devices
 python3 "$SYNC" status --json --expect "<RECEIPT>"
@@ -114,6 +116,18 @@ python3 "$SYNC" sync --plan "<PLAN_ID>" --expect "<RECEIPT>"
 第二台同步成功后会打印下一次交接使用的 Receipt。
 
 每次从一台 Mac 切换到另一台时，都重复 Receipt 交接。Receipt 能证明预期清单已经可见，但不能让存在传播延迟的云盘支持并发同步。
+
+### 已有 0.2 配置切换为只共享 Skills
+
+0.2 创建的配置会保留旧的 `all` 范围，避免升级时静默改变行为。在**两台 Mac** 更新到 0.3 后分别运行一次：
+
+```bash
+python3 "$SYNC" configure --scope skills
+```
+
+切换范围只改变后续同步清单，不会删除本机或共享目录里已有的 rules、`AGENTS.md` 或 Skills。下一次交接必须由两台 Mac 使用相同范围；Receipt 会拒绝范围不一致的同步。
+
+GitHub/Marketplace 是 Codex Sync 这个 Skill 的安装与更新来源；你自己的私有 Store 才是两台 Mac 之间共享自定义 Skills 的位置。
 
 ### 4. 查看并恢复 Snapshot
 
@@ -128,8 +142,9 @@ Snapshot 只保存在本机 `~/.codex-sync/snapshots`，不会写入共享 Store
 
 ## 命令模型
 
-- `create`：创建全新的共享 Store，并配置第一台 Mac。
-- `join --expect-store-id`：仅在 Store 身份一致时加入已有 Store。
+- `create --scope skills`：创建全新的共享 Store，并默认只共享 Skills。
+- `join --expect-store-id --scope skills`：仅在 Store 身份和同步范围一致时加入已有 Store。
+- `configure --scope skills|all`：切换只共享 Skills 或兼容旧版全范围；不会删除文件。
 - `status` / `status --json`：只读查看当前计划。
 - `sync --plan`：只执行已审核的精确计划。
 - 成功的 `sync --plan` 会打印下一台 Mac 使用的 Receipt。
@@ -139,11 +154,11 @@ Snapshot 只保存在本机 `~/.codex-sync/snapshots`，不会写入共享 Store
 
 ## 与相关工具的定位差异
 
-截至 2026 年 8 月，以下项目解决了相邻问题。Codex Sync 刻意保持窄范围：通过用户自己的私有传输，在多台电脑间共享 Codex 个性化内容，并检查计划、Store 身份、云盘交接、冲突与恢复。
+截至 2026 年 8 月，以下项目解决了相邻问题。Codex Sync 刻意保持窄范围：默认通过用户自己的私有传输，在多台电脑间双向共享 Skills，并检查计划、Store 身份、云盘交接、冲突与恢复。
 
 | 项目 | 公开定位 | Codex Sync 的差异 |
 | --- | --- | --- |
-| [skills-manager](https://github.com/xingkongliang/skills-manager) | 桌面端 Skill 库、广泛 Agent 支持、私有 Git 备份与多设备 Skills 同步 | Codex Sync 不做 Skill 库或 GUI，同时覆盖 Codex rules、`AGENTS.md` 与可选 memories。 |
+| [skills-manager](https://github.com/xingkongliang/skills-manager) | 桌面端 Skill 库、广泛 Agent 支持、私有 Git 备份与多设备 Skills 同步 | Codex Sync 不做 Skill 库或 GUI；默认只共享 Codex Skills，rules 与 `AGENTS.md` 仅在显式 `all` 范围下参与。 |
 | [skillshare](https://github.com/runkids/skillshare) | 通过 Git 为多种 AI 工具管理 Skills 与其他资源，并提供审计 | Codex Sync 专注于现有私有传输中的 Codex 双向状态，并拒绝未经审核的计划。 |
 | [skills-hub](https://github.com/qufei1993/skills-hub) | 桌面端安装、整理、更新和部署多工具 Skills | Codex Sync 关注跨电脑安全与恢复，不做发现和批量 Skill 管理。 |
 | [vsync](https://github.com/nicepkg/vsync) | 从指定真源向其他工具做单向配置转换 | Codex Sync 处理多台电脑各自发生的修改，冲突时保留双方，而不是指定一个工具覆盖其他工具。 |
