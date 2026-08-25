@@ -1,7 +1,7 @@
 {
   "name": "codex-sync",
-  "version": "0.4.0",
-  "description": "Privately share user-authored Codex Skills between macOS and Windows as a conflict-safe two-way union with one-command handoffs.",
+  "version": "0.5.0",
+  "description": "Privately sync Codex Skills across macOS and Windows, then audit, install, and verify supported local dependencies from an approved plan.",
   "author": {
     "name": "Nicebeaf",
     "url": "https://github.com/Nicebeaf"
@@ -9,12 +9,12 @@
   "homepage": "https://github.com/Nicebeaf/codex-sync",
   "repository": "https://github.com/Nicebeaf/codex-sync",
   "license": "MIT",
-  "keywords": ["codex", "sync", "macos", "windows", "skills", "backup", "private", "multi-device", "restore"],
+  "keywords": ["codex", "sync", "macos", "windows", "skills", "dependencies", "backup", "private", "multi-device", "restore"],
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex Sync",
-    "shortDescription": "One-command Skills sharing across devices",
-    "longDescription": "Share user-authored Codex Skills between macOS and Windows as a two-way union through your own private shared folder. The sync-now command automatically verifies the latest handoff while conflicts stop before selected files change. Device rules and AGENTS.md are excluded by default; no synchronized content is sent to the developer.",
+    "shortDescription": "Safe Skills sync plus dependency readiness",
+    "longDescription": "Share user-authored Codex Skills between macOS and Windows as a two-way union through your own private shared folder. After syncing, scan every local Skill for audited dependency IDs and common Python imports, review exact supported install commands, apply only the approved dependency Plan ID, and verify each built-in probe. Free-form Skill text is never executed as an installer.",
     "developerName": "Nicebeaf",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
@@ -24,6 +24,7 @@
       "Show status as JSON, explain the plan, and apply only the approved Plan ID.",
       "Verify the previous device's receipt before syncing this device.",
       "Quick sync this device in one command and stop safely if there is a conflict.",
+      "Scan local Skill dependencies, show the exact install plan, and wait for approval before installing anything.",
       "Show snapshot history and preview a restore without changing files."
     ],
     "brandColor": "#10A37F"

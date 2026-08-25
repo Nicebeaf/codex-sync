@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md)
 
-Codex Sync is an open-source Codex plugin for safely sharing user-authored Skills between macOS and Windows computers. It uses a private folder that **you** choose and control, such as iCloud Drive, OneDrive, Dropbox, Syncthing, or a NAS mount.
+Codex Sync is an open-source Codex plugin for safely sharing user-authored Skills between macOS and Windows computers, then checking whether supported local dependencies are ready on the receiving device. It uses a private folder that **you** choose and control, such as iCloud Drive, OneDrive, Dropbox, Syncthing, or a NAS mount.
 
 Codex Sync does not provide a cloud service, shared account, or author-operated storage. Every person uses their own private shared folder; no synchronized content is sent to the author.
 
@@ -32,6 +32,8 @@ New configurations default to the `skills` scope, which shares only:
 - `~/.agents/skills`
 - `~/.codex/skills`, excluding `.system`
 
+The `codex-sync` Skill itself, plus `.codex-sync-*` installer staging and backup directories, is excluded from both Skill roots. Install or update Codex Sync independently on each computer through this repository or the plugin marketplace; the private Store is for the user's other Skills, not for distributing the synchronization runtime that is currently executing.
+
 `~/.codex/rules` and `~/.codex/AGENTS.md` are device-level configuration. They are excluded by default and cannot be replaced by another device unless `--scope all` is selected explicitly.
 
 Local Memories can be enabled explicitly. The selector attempts to exclude known credential filenames and secret-shaped content, along with sessions, history, databases, logs, plugins, caches, browser state, generated images, automations, device identifiers, and symlinks. These are filters, not an absolute guarantee; users must still inspect `status` and must not store credentials inside Skill folders.
@@ -45,6 +47,7 @@ Local Memories can be enabled explicitly. The selector attempts to exclude known
 - Receipts bind a successful handoff to the shared-tree manifest, so another device can verify that the expected cloud-folder update is visible.
 - `sync-now` automatically selects and verifies the latest handoff receipt, so routine use requires no copied Plan ID or Receipt.
 - If `sync-now` finds a conflict, it stops before changing selected files and leaves both current versions in place.
+- Dependency status and plans are read-only; local installation requires a separate, exact Dependency Plan ID and verifies every supported item afterward.
 - Conflicting files are preserved on both sides and never overwritten automatically.
 - Existing files are backed up before replacement.
 - Snapshot history and restore make recovery an explicit, verifiable operation.
@@ -88,6 +91,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 Restart Codex if `$codex-sync` does not appear immediately.
 
+Run the installer separately on every computer that will use Codex Sync. The synchronization Store intentionally excludes the Codex Sync runtime itself.
+
 ## Routine sync in three steps
 
 After one-time setup, switching computers is always:
@@ -111,6 +116,34 @@ py $SYNC sync-now
 ```
 
 `sync-now` verifies the newest successful handoff automatically. It completes and emits the next receipt when there are no conflicts; conflicts stop before selected files change.
+
+## Dependency readiness after each quick sync
+
+A successful `sync-now` copies Skill files only. On the receiving computer, check the local dependencies before relying on a synchronized Skill. The dependency manager scans both `~/.agents/skills` and `~/.codex/skills` (excluding `.system`), reads only each Skill's `dependencies.json`, and statically recognizes common Python imports. It never executes `SKILL.md`, URLs, or scripts while scanning or planning.
+
+When you use the three-step Codex phrase above, Codex runs `deps status` after `sync-now`; this does not add another manual transfer step. If everything is ready, the handoff is done. If something is missing, Codex shows one exact plan and asks once before installing. The four commands below are the direct CLI equivalents: `status` is the required first check; `plan` prints a fresh Dependency Plan ID plus each supported command, required blocker, optional gap, and legacy advisory. Do not run `install` unless the user has seen and explicitly approved that exact Plan ID and command list. `verify` reruns local dependency probes only; it is not a complete Skill business-workflow test.
+
+```bash
+# macOS
+SYNC="$HOME/.codex/skills/codex-sync/scripts/codex_sync.py"
+python3 "$SYNC" deps status
+python3 "$SYNC" deps plan
+python3 "$SYNC" deps install --plan "<DEPENDENCY_PLAN_ID>"
+python3 "$SYNC" deps verify
+```
+
+```powershell
+# Windows PowerShell
+$SYNC = "$HOME\.codex\skills\codex-sync\scripts\codex_sync.py"
+py $SYNC deps status
+py $SYNC deps plan
+py $SYNC deps install --plan "<DEPENDENCY_PLAN_ID>"
+py $SYNC deps verify
+```
+
+Installation is local to the current computer: it does not write the private Store, a receipt, or any synchronized Skill content. Package-manager operations are non-transactional and can require system permissions or package-source/EULA acceptance. Review [the dependency reference](plugins/codex-sync/skills/codex-sync/references/dependencies.md) for the manifest, catalog, supported managers, and migration steps.
+
+Missing manifests are reported as `legacy_unmanaged`; undocumented dependencies are not guessed. Unknown or unmanaged Python imports, invalid manifests, unsupported platforms, or manual dependencies leave the result `partial` or `blocked`; resolve them with the Skill author before claiming readiness.
 
 ## One-time setup
 
@@ -161,7 +194,7 @@ After setup, use the three-step `sync-now` workflow above. A receipt proves that
 
 ### Migrate an existing 0.2 configuration to Skills-only sharing
 
-Configurations created by 0.2 retain the legacy `all` scope so an upgrade never changes behavior silently. After updating both computers to 0.4, run this once on **each computer**:
+Configurations created by 0.2 retain the legacy `all` scope so an upgrade never changes behavior silently. After updating both computers to 0.4 or newer, run this once on **each computer**:
 
 ```bash
 python3 "$SYNC" configure --scope skills
@@ -216,6 +249,7 @@ Requirements: macOS or Windows 10/11 and Python 3.9 or newer. The runtime uses o
 ```bash
 python3 -m py_compile plugins/codex-sync/skills/codex-sync/scripts/codex_sync.py
 python3 tests/test_codex_sync.py
+python3 tests/test_dependencies.py
 python3 tests/test_package.py
 ```
 

@@ -2,6 +2,22 @@
 
 All notable changes to Codex Sync are documented here.
 
+## [0.5.0] - Unreleased
+
+### Added
+
+- Dependency-readiness workflow for synchronized Skills: `deps status`, reviewed `deps plan`, exact-plan `deps install`, and probe-only `deps verify`.
+- Strict, catalog-backed `dependencies.json` authoring documentation and migration guidance.
+- Dependency scanning across user `~/.agents/skills` and `~/.codex/skills`, with static recognition of common Python imports.
+
+### Safety and verification boundary
+
+- Installation is limited to reviewed, controlled `pip`, `npm`, `brew`, or `winget` argv on the current device; it does not write the Store or receipts.
+- The Codex Sync runtime itself and standalone installer staging/backup directories under the Skills roots are excluded from synchronization; install the tool independently on each device.
+- Legacy Skills without a manifest remain `legacy_unmanaged`; unknown imports, malformed manifests, unsupported platforms, and manual dependencies remain partial or blocked.
+- `deps verify` checks declared and inferred dependency probes only. It is not a complete Skill business-workflow test.
+- Package-manager installation is non-transactional and can require system permissions or package-source/EULA acceptance.
+
 ## [0.4.0] - 2026-08-25
 
 ### Added
