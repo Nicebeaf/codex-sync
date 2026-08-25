@@ -2,7 +2,7 @@
 
 All notable changes to Codex Sync are documented here.
 
-## [0.5.0] - Unreleased
+## [0.5.0] - 2026-08-25
 
 ### Added
 
