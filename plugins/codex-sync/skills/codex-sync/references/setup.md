@@ -70,7 +70,7 @@ python3 scripts/codex_sync.py sync --plan "<PLAN_ID>" --expect "<RECEIPT>"
 
 New configurations default to `skills`, selecting only `~/.agents/skills` and `~/.codex/skills`. Device-level `~/.codex/rules` and `~/.codex/AGENTS.md` are selected only by `--scope all`.
 
-Configurations created by 0.2 retain `all` so upgrading does not silently change an existing setup. After both computers update to 0.4, switch each one to Skills-only sharing with:
+Configurations created by 0.2 retain `all` so upgrading does not silently change an existing setup. After both computers update to 0.4 or newer, switch each one to Skills-only sharing with:
 
 ```bash
 python3 scripts/codex_sync.py configure --scope skills

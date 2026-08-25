@@ -26,6 +26,8 @@ jobs:
         run: python -m py_compile plugins/codex-sync/skills/codex-sync/scripts/codex_sync.py
       - name: Unit tests
         run: python tests/test_codex_sync.py
+      - name: Dependency readiness tests
+        run: python tests/test_dependencies.py
       - name: Package test
         run: python tests/test_package.py
 

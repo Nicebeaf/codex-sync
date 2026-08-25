@@ -49,16 +49,25 @@ class PackageTest(unittest.TestCase):
         self.assertIn("private `Store`", english)
         self.assertIn("does **not** provide end-to-end encryption", english)
         self.assertIn("not an absolute guarantee", english)
+        self.assertIn("Dependency Plan ID", english)
+        self.assertIn("dependencies.json", english)
+        self.assertIn("not a complete Skill business-workflow test", english)
 
         self.assertIn("独立维护的社区项目", chinese)
         self.assertIn("不是 OpenAI 官方产品", chinese)
         self.assertIn("私有 `Store`", chinese)
         self.assertIn("不提供端到端加密", chinese)
         self.assertIn("不能绝对保证", chinese)
+        self.assertIn("Dependency Plan ID", chinese)
+        self.assertIn("dependencies.json", chinese)
+        self.assertIn("不是**完整的 Skill 业务流程测试", chinese)
 
         self.assertIn("independent, community-maintained project", security)
         self.assertIn("does not provide end-to-end encryption", security)
         self.assertIn("not an absolute guarantee", security)
+        self.assertIn("Dependency installation boundary", security)
+        self.assertIn("shell=False", security)
+        self.assertIn("not that every workflow", security)
 
     def test_gitignore_blocks_local_secret_and_state_paths(self) -> None:
         self.assertTrue(GITIGNORE.is_file())
@@ -106,6 +115,7 @@ class PackageTest(unittest.TestCase):
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertIn("name: Reproducible source safety check", workflow)
         self.assertIn("test_release_contains_no_local_paths_or_secret_shapes", workflow)
+        self.assertIn("python tests/test_dependencies.py", workflow)
 
     def test_dependabot_tracks_github_actions_updates(self) -> None:
         configuration = DEPENDABOT.read_text(encoding="utf-8")
@@ -141,6 +151,7 @@ class PackageTest(unittest.TestCase):
                 skills = home / ".codex/skills"
                 installed = skills / "codex-sync"
                 self.assertTrue((installed / "SKILL.md").is_file())
+                self.assertTrue((installed / "dependencies.json").is_file())
                 self.assertTrue((installed / "scripts/codex_sync.py").is_file())
                 self.assertEqual([installed], list(skills.iterdir()))
                 self.assertFalse((installed / "codex-sync").exists())
@@ -163,6 +174,7 @@ class PackageTest(unittest.TestCase):
                 self.assertIn("join", help_result.stdout)
                 self.assertIn("sync", help_result.stdout)
                 self.assertIn("sync-now", help_result.stdout)
+                self.assertIn("deps", help_result.stdout)
 
     @unittest.skipUnless(os.name == "nt", "PowerShell installer is tested on Windows")
     def test_windows_installer_is_idempotent_in_clean_home(self) -> None:
@@ -198,6 +210,7 @@ class PackageTest(unittest.TestCase):
                 skills = home / ".codex/skills"
                 installed = skills / "codex-sync"
                 self.assertTrue((installed / "SKILL.md").is_file())
+                self.assertTrue((installed / "dependencies.json").is_file())
                 self.assertTrue((installed / "scripts/codex_sync.py").is_file())
                 self.assertEqual([installed], list(skills.iterdir()))
 
@@ -215,6 +228,7 @@ class PackageTest(unittest.TestCase):
                     help_result.stdout + help_result.stderr,
                 )
                 self.assertIn("sync-now", help_result.stdout)
+                self.assertIn("deps", help_result.stdout)
 
     def test_marketplace_plugin_installs_into_clean_cache(self) -> None:
         catalog = json.loads(MARKETPLACE.read_text(encoding="utf-8"))
@@ -232,13 +246,14 @@ class PackageTest(unittest.TestCase):
 
         manifest = json.loads((plugin / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(entry["name"], manifest["name"])
-        self.assertEqual("0.4.0", manifest["version"])
+        self.assertEqual("0.5.0", manifest["version"])
 
         with tempfile.TemporaryDirectory() as temporary:
             installed = Path(temporary) / "cache/codex-sync/local"
             shutil.copytree(plugin, installed)
             skills = installed / manifest["skills"]
             self.assertTrue((skills / "codex-sync/SKILL.md").is_file())
+            self.assertTrue((skills / "codex-sync/dependencies.json").is_file())
             runtime = skills / "codex-sync/scripts/codex_sync.py"
             result = subprocess.run(
                 [sys.executable, str(runtime), "--help"],
@@ -251,6 +266,20 @@ class PackageTest(unittest.TestCase):
             self.assertIn("init", result.stdout)
             self.assertIn("sync", result.stdout)
             self.assertIn("sync-now", result.stdout)
+            self.assertIn("deps", result.stdout)
+            dependency_help = subprocess.run(
+                [sys.executable, str(runtime), "deps", "--help"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(
+                0, dependency_help.returncode,
+                dependency_help.stdout + dependency_help.stderr,
+            )
+            self.assertIn("status", dependency_help.stdout)
+            self.assertIn("install", dependency_help.stdout)
 
     def test_release_contains_no_local_paths_or_secret_shapes(self) -> None:
         forbidden_names = {"auth.json", "config.toml", "history.jsonl"}

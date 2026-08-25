@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Codex Sync 是一个开源 Codex plugin，用于在 macOS 和 Windows 电脑之间安全共享用户自己创建的 Skills。它只使用**你自己选择并控制**的私有共享目录，例如 iCloud Drive、OneDrive、Dropbox、Syncthing 或 NAS。
+Codex Sync 是一个开源 Codex plugin，用于在 macOS 和 Windows 电脑之间安全共享用户自己创建的 Skills，并在接收设备上检查受支持的本机依赖是否就绪。它只使用**你自己选择并控制**的私有共享目录，例如 iCloud Drive、OneDrive、Dropbox、Syncthing 或 NAS。
 
 Codex Sync 不提供云服务、共享账号或作者运营的存储空间。每个人都使用自己的私有共享目录；同步内容不会发送给作者。
 
@@ -32,6 +32,8 @@ Codex Sync **不提供端到端加密（E2EE）**。Store 在同步过程中的�
 - `~/.agents/skills`
 - `~/.codex/skills`，排除 `.system`
 
+两个 Skill 根目录中的 `codex-sync` 本体，以及 `.codex-sync-*` 安装暂存/备份目录，也不会参与同步。请通过本仓库或插件 marketplace 在每台电脑上分别安装、更新 Codex Sync；私有 Store 用来共享用户的其他 Skills，不负责分发当前正在执行的同步运行时。
+
 `~/.codex/rules` 和 `~/.codex/AGENTS.md` 属于设备级配置，默认不参与共享，也不会因为另一台电脑的更新而被替换。只有显式选择 `--scope all` 才会同步它们。
 
 Memories 必须显式开启。选择器会尝试排除已知凭据文件名和疑似密钥内容，以及任务会话、历史记录、数据库、日志、插件缓存、浏览器状态、生成图片、自动任务、设备标识和软链接。这些是过滤器而非绝对保证；用户仍须检查 `status`，不得把凭据保存在 Skill 目录内。
@@ -45,6 +47,7 @@ Memories 必须显式开启。选择器会尝试排除已知凭据文件名和�
 - Receipt 会绑定一次成功同步与共享目录清单，另一台电脑可据此确认预期更新已经可见。
 - `sync-now` 自动寻找上一台电脑的最新 Receipt、验证共享清单并完成同步，不需要手工复制 Plan ID 或 Receipt。
 - `sync-now` 发现冲突时会在改动所选文件之前停止，双方现有版本保持原样。
+- 依赖状态与计划均为只读；本机安装需要另一份精确的 Dependency Plan ID，并在每个受支持项目安装后重新验证。
 - 冲突文件会保存两个版本，不会自动覆盖。
 - 替换文件前自动备份。
 - Snapshot history 和 restore 提供可检查的恢复入口。
@@ -88,6 +91,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 如果 `$codex-sync` 没有立即出现，请重启 Codex。
 
+每台要使用 Codex Sync 的电脑都需要分别运行安装流程；同步 Store 会主动排除 Codex Sync 运行时本体。
+
 ## 日常同步只需三步
 
 完成一次初始化后，以后每次换电脑只需要：
@@ -113,6 +118,34 @@ py $SYNC sync-now
 ```
 
 `sync-now` 会自动读取最近一次成功交接的 Receipt。没有冲突时直接完成并产生下一张 Receipt；有冲突时停止，不改动所选文件，然后再进行一次明确的冲突选择。
+
+## 每次快速同步后的依赖就绪
+
+成功的 `sync-now` 只复制 Skill 文件。在接收设备上使用同步过来的 Skill 前，先检查本机依赖。依赖管理器会扫描 `~/.agents/skills` 与 `~/.codex/skills`（排除 `.system`），只读取各 Skill 的 `dependencies.json`，并静态识别常见 Python import；扫描和计划阶段不会执行 `SKILL.md`、URL 或脚本。
+
+使用上面的三步 Codex 口令时，Codex 会在 `sync-now` 后接着运行 `deps status`，不会增加新的人工传输步骤。依赖齐全就直接结束；发现缺项时，Codex 只展示一次精确计划并询问一次是否安装。下面四条是对应的直接 CLI 命令：`status` 是必须先做的检查；`plan` 会打印一份新的 Dependency Plan ID、每条支持的安装命令、必需阻塞项、可选缺项和旧 Skill 提示。只有用户已经看见并明确批准这份精确 Plan ID 和命令列表后，才可运行 `install`。`verify` 只重新执行本机依赖探针，**不是**完整的 Skill 业务流程测试。
+
+```bash
+# macOS
+SYNC="$HOME/.codex/skills/codex-sync/scripts/codex_sync.py"
+python3 "$SYNC" deps status
+python3 "$SYNC" deps plan
+python3 "$SYNC" deps install --plan "<DEPENDENCY_PLAN_ID>"
+python3 "$SYNC" deps verify
+```
+
+```powershell
+# Windows PowerShell
+$SYNC = "$HOME\.codex\skills\codex-sync\scripts\codex_sync.py"
+py $SYNC deps status
+py $SYNC deps plan
+py $SYNC deps install --plan "<DEPENDENCY_PLAN_ID>"
+py $SYNC deps verify
+```
+
+安装只作用于当前设备：不会写入私有 Store、Receipt 或任何被同步的 Skill 内容。包管理器安装不是事务性的，可能要求系统权限，或要求接受软件源/EULA。manifest、catalog、支持的 manager 和迁移方式见[依赖参考](plugins/codex-sync/skills/codex-sync/references/dependencies.md)。
+
+没有 manifest 的旧 Skill 会标记为 `legacy_unmanaged`；不会猜测文档里写的依赖。未知或未受管的 Python import、无效 manifest、不支持的平台或需要手动配置的依赖，结果只能是 `partial` 或 `blocked`；在声称已就绪前，应由 Skill 作者补齐说明或迁移。
 
 ## 首次连接两台电脑
 
@@ -163,7 +196,7 @@ python3 "$SYNC" sync --plan "<PLAN_ID>" --expect "<RECEIPT>"
 
 ### 已有 0.2 配置切换为只共享 Skills
 
-0.2 创建的配置会保留旧的 `all` 范围，避免升级时静默改变行为。在**两台电脑**更新到 0.4 后分别运行一次：
+0.2 创建的配置会保留旧的 `all` 范围，避免升级时静默改变行为。在**两台电脑**更新到 0.4 或更高版本后分别运行一次：
 
 ```bash
 python3 "$SYNC" configure --scope skills
@@ -218,6 +251,7 @@ Snapshot 只保存在本机 `~/.codex-sync/snapshots`，不会写入共享 Store
 ```bash
 python3 -m py_compile plugins/codex-sync/skills/codex-sync/scripts/codex_sync.py
 python3 tests/test_codex_sync.py
+python3 tests/test_dependencies.py
 python3 tests/test_package.py
 ```
 

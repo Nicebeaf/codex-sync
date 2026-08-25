@@ -484,7 +484,20 @@ class CodexSyncTest(unittest.TestCase):
         self.write(self.mini / ".codex/AGENTS.md", "rules\n")
         self.write(self.mini / ".codex/rules/default.rules", "allow\n")
         self.write(self.mini / ".codex/skills/custom/SKILL.md", "custom\n")
+        self.write(self.mini / ".codex/skills/codex-sync/SKILL.md", "tool instructions\n")
+        self.write(
+            self.mini / ".codex/skills/codex-sync/scripts/codex_sync.py",
+            "print('tool runtime')\n",
+        )
         self.write(self.mini / ".codex/skills/.system/private.txt", "excluded\n")
+        self.write(
+            self.mini / ".codex/skills/.codex-sync-backup-test/SKILL.md",
+            "installer backup\n",
+        )
+        self.write(
+            self.mini / ".codex/skills/.codex-sync-install.test/SKILL.md",
+            "installer staging\n",
+        )
         self.write(self.mini / ".codex/skills/custom/auth.json", "excluded\n")
         self.write(self.mini / ".codex/skills/custom/.env", "PASSWORD=excluded-value\n")
         self.write(self.mini / ".codex/skills/custom/.npmrc", "token=excluded-value\n")
@@ -500,7 +513,17 @@ class CodexSyncTest(unittest.TestCase):
         self.assertFalse((shared_root / "codex/AGENTS.md").exists())
         self.assertFalse((shared_root / "codex/rules/default.rules").exists())
         self.assertTrue((shared_root / "codex/skills/custom/SKILL.md").exists())
+        self.assertFalse((shared_root / "codex/skills/codex-sync/SKILL.md").exists())
+        self.assertFalse(
+            (shared_root / "codex/skills/codex-sync/scripts/codex_sync.py").exists()
+        )
         self.assertFalse((shared_root / "codex/skills/.system/private.txt").exists())
+        self.assertFalse(
+            (shared_root / "codex/skills/.codex-sync-backup-test/SKILL.md").exists()
+        )
+        self.assertFalse(
+            (shared_root / "codex/skills/.codex-sync-install.test/SKILL.md").exists()
+        )
         self.assertFalse((shared_root / "codex/skills/custom/auth.json").exists())
         self.assertFalse((shared_root / "codex/skills/custom/.env").exists())
         self.assertFalse((shared_root / "codex/skills/custom/.npmrc").exists())

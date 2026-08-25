@@ -1,0 +1,7 @@
+{
+  "schema": "codex-sync.skill-dependencies/v1",
+  "requires": [
+    "runtime.python3"
+  ],
+  "optional": []
+}

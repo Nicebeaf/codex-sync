@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-"""Conflict-safe synchronization for user-authored Codex data."""
+"""Conflict-safe Codex Skill synchronization and local dependency readiness."""
 
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
+import importlib.util
 import json
 import os
 import platform
 import re
 import secrets
+import shlex
 import shutil
+import site
 import stat
+import subprocess
 import sys
+import sysconfig
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -21,7 +27,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 VERSION = 1
-TOOL_VERSION = "0.4.0"
+TOOL_VERSION = "0.5.0"
 VALID_SYNC_SCOPES = ("skills", "all")
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_TOTAL_FILES = 10_000
@@ -124,6 +130,15 @@ SECRET_PLACEHOLDER_WORDS = re.compile(
     r"unset|todo|tbd)(?![A-Za-z0-9])"
 )
 WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+DEPENDENCY_SCHEMA = "codex-sync.skill-dependencies/v1"
+DEPENDENCY_CATALOG_VERSION = 1
+MAX_DEPENDENCY_MANIFEST_BYTES = 16 * 1024
+MAX_DEPENDENCIES_PER_SKILL = 64
+MAX_DEPENDENCY_SKILLS = 2_000
+MAX_PYTHON_FILES_PER_SKILL = 256
+MAX_PYTHON_SOURCE_BYTES = 2 * 1024 * 1024
+MAX_PYTHON_TOTAL_BYTES = 16 * 1024 * 1024
+DEPENDENCY_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 SECRET_SHAPES = (
     re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(
@@ -180,6 +195,159 @@ class PlanItem:
     reason: str
 
 
+@dataclass(frozen=True)
+class SkillRef:
+    namespace: str
+    name: str
+    root: Path
+
+    @property
+    def logical_id(self) -> str:
+        return f"{self.namespace}/{self.name}"
+
+
+@dataclass(frozen=True)
+class DependencyNeed:
+    dependency_id: str
+    required: bool
+    source: str
+
+
+DEPENDENCY_CATALOG: dict[str, dict] = {
+    "runtime.python3": {
+        "kind": "python_runtime",
+        "minimum": (3, 9),
+        "platforms": ("macos", "windows"),
+    },
+    "python.beautifulsoup4": {
+        "kind": "python_module", "module": "bs4", "package": "beautifulsoup4",
+        "platforms": ("macos", "windows"),
+    },
+    "python.httpx": {
+        "kind": "python_module", "module": "httpx", "package": "httpx",
+        "platforms": ("macos", "windows"),
+    },
+    "python.jinja2": {
+        "kind": "python_module", "module": "jinja2", "package": "Jinja2",
+        "platforms": ("macos", "windows"),
+    },
+    "python.lxml": {
+        "kind": "python_module", "module": "lxml", "package": "lxml",
+        "platforms": ("macos", "windows"),
+    },
+    "python.markdown": {
+        "kind": "python_module", "module": "markdown", "package": "Markdown",
+        "platforms": ("macos", "windows"),
+    },
+    "python.numpy": {
+        "kind": "python_module", "module": "numpy", "package": "numpy",
+        "platforms": ("macos", "windows"),
+    },
+    "python.openpyxl": {
+        "kind": "python_module", "module": "openpyxl", "package": "openpyxl",
+        "platforms": ("macos", "windows"),
+    },
+    "python.opencv": {
+        "kind": "python_module", "module": "cv2", "package": "opencv-python",
+        "platforms": ("macos", "windows"),
+    },
+    "python.pandas": {
+        "kind": "python_module", "module": "pandas", "package": "pandas",
+        "platforms": ("macos", "windows"),
+    },
+    "python.pillow": {
+        "kind": "python_module", "module": "PIL", "package": "Pillow",
+        "platforms": ("macos", "windows"),
+    },
+    "python.playwright": {
+        "kind": "python_module", "module": "playwright", "package": "playwright",
+        "platforms": ("macos", "windows"),
+    },
+    "python.pptx": {
+        "kind": "python_module", "module": "pptx", "package": "python-pptx",
+        "platforms": ("macos", "windows"),
+    },
+    "python.pyyaml": {
+        "kind": "python_module", "module": "yaml", "package": "PyYAML",
+        "platforms": ("macos", "windows"),
+    },
+    "python.requests": {
+        "kind": "python_module", "module": "requests", "package": "requests",
+        "platforms": ("macos", "windows"),
+    },
+    "python.scrapling": {
+        "kind": "python_module", "module": "scrapling", "package": "scrapling",
+        "platforms": ("macos", "windows"),
+    },
+    "python.scikit-learn": {
+        "kind": "python_module", "module": "sklearn", "package": "scikit-learn",
+        "platforms": ("macos", "windows"),
+    },
+    "python.weasyprint": {
+        "kind": "python_module", "module": "weasyprint", "package": "weasyprint",
+        "platforms": ("macos", "windows"),
+    },
+    "python.docx": {
+        "kind": "python_module", "module": "docx", "package": "python-docx",
+        "platforms": ("macos", "windows"),
+    },
+    "binary.ffmpeg": {
+        "kind": "command", "command": "ffmpeg", "platforms": ("macos", "windows"),
+        "install": {"macos": ("brew", "ffmpeg"), "windows": ("winget", "Gyan.FFmpeg")},
+    },
+    "binary.gh": {
+        "kind": "command", "command": "gh", "platforms": ("macos", "windows"),
+        "install": {"macos": ("brew", "gh"), "windows": ("winget", "GitHub.cli")},
+    },
+    "binary.git": {
+        "kind": "command", "command": "git", "platforms": ("macos", "windows"),
+        "install": {"macos": ("brew", "git"), "windows": ("winget", "Git.Git")},
+    },
+    "binary.jq": {
+        "kind": "command", "command": "jq", "platforms": ("macos", "windows"),
+        "install": {"macos": ("brew", "jq"), "windows": ("winget", "jqlang.jq")},
+    },
+    "binary.node": {
+        "kind": "command", "command": "node", "platforms": ("macos", "windows"),
+        "install": {"macos": ("brew", "node"), "windows": ("winget", "OpenJS.NodeJS.LTS")},
+    },
+    "binary.pandoc": {
+        "kind": "command", "command": "pandoc", "platforms": ("macos", "windows"),
+        "install": {"macos": ("brew", "pandoc"), "windows": ("winget", "JohnMacFarlane.Pandoc")},
+    },
+    "binary.ripgrep": {
+        "kind": "command", "command": "rg", "platforms": ("macos", "windows"),
+        "install": {"macos": ("brew", "ripgrep"), "windows": ("winget", "BurntSushi.ripgrep.MSVC")},
+    },
+    "binary.tesseract": {
+        "kind": "command", "command": "tesseract", "platforms": ("macos", "windows"),
+        "install": {"macos": ("brew", "tesseract"), "windows": ("winget", "UB-Mannheim.TesseractOCR")},
+    },
+    "binary.yt-dlp": {
+        "kind": "command", "command": "yt-dlp", "platforms": ("macos", "windows"),
+        "install": {"macos": ("brew", "yt-dlp"), "windows": ("winget", "yt-dlp.yt-dlp")},
+    },
+    "node.typescript": {
+        "kind": "command", "command": "tsc", "platforms": ("macos", "windows"),
+        "install": {"macos": ("npm", "typescript"), "windows": ("npm", "typescript")},
+    },
+    "app.final-cut-pro": {
+        "kind": "app", "platforms": ("macos",),
+        "paths": {"macos": ("/Applications/Final Cut Pro.app",)},
+    },
+    "mcp.scrapling": {
+        "kind": "external", "platforms": ("macos", "windows"),
+        "detail": "Configure and authorize the Scrapling MCP locally in Codex.",
+    },
+}
+
+PYTHON_IMPORT_CATALOG = {
+    entry["module"]: dependency_id
+    for dependency_id, entry in DEPENDENCY_CATALOG.items()
+    if entry["kind"] == "python_module"
+}
+
+
 def now_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
@@ -223,6 +391,48 @@ class SharedLock:
         except OSError as cleanup_error:
             if exc_value is None:
                 raise SyncError(f"Could not release shared lock: {cleanup_error}") from cleanup_error
+
+
+class LocalDependencyLock:
+    """Prevent two dependency installers from changing one local environment at once."""
+
+    def __init__(self, state_home: Path):
+        self.path = state_home / "deps-install.lock"
+        self.acquired = False
+
+    def __enter__(self) -> "LocalDependencyLock":
+        mkdir_private(self.path.parent)
+        try:
+            self.path.mkdir(mode=0o700)
+            os.chmod(self.path, 0o700)
+        except FileExistsError as exc:
+            if self.path.is_symlink() or not self.path.is_dir():
+                raise SyncError(f"Dependency install lock is unsafe: {self.path}") from exc
+            raise SyncError(
+                "Another dependency installation is active on this device. "
+                "Wait for it to finish before retrying."
+            ) from exc
+        self.acquired = True
+        atomic_json_write(self.path / "owner.json", {
+            "version": VERSION,
+            "pid": os.getpid(),
+            "created_at": now_stamp(),
+        })
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if not self.acquired:
+            return
+        owner_path = self.path / "owner.json"
+        try:
+            if owner_path.exists() and not owner_path.is_symlink():
+                owner_path.unlink()
+            self.path.rmdir()
+        except OSError as cleanup_error:
+            if exc_value is None:
+                raise SyncError(
+                    f"Could not release dependency install lock: {cleanup_error}"
+                ) from cleanup_error
 
 
 def json_read(path: Path, default: dict) -> dict:
@@ -489,7 +699,9 @@ def iter_tree(root: Path) -> Iterable[Path]:
         current_path = Path(current)
         dirnames[:] = sorted(
             name for name in dirnames
-            if name.lower() not in EXCLUDED_DIRS and not (current_path / name).is_symlink()
+            if name.lower() not in EXCLUDED_DIRS
+            and not name.lower().startswith(".codex-sync-")
+            and not (current_path / name).is_symlink()
         )
         for name in sorted(filenames):
             path = current_path / name
@@ -805,6 +1017,853 @@ def source_specs(layout: Layout, config: dict) -> list[tuple[str, Path]]:
     return specs
 
 
+def dependency_platform(raw_platform: str | None = None) -> str:
+    current = raw_platform or sys.platform
+    if current == "darwin":
+        return "macos"
+    if current == "win32" or current.startswith("cygwin"):
+        return "windows"
+    return "unsupported"
+
+
+def dependency_skill_roots(layout: Layout) -> list[tuple[str, Path]]:
+    return [
+        ("agents/skills", layout.agents_home / "skills"),
+        ("codex/skills", layout.codex_home / "skills"),
+    ]
+
+
+def discover_skills(
+    layout: Layout, selectors: Iterable[str] | None = None
+) -> list[SkillRef]:
+    requested = {value.casefold() for value in (selectors or []) if value}
+    discovered: list[SkillRef] = []
+    matched: set[str] = set()
+    for namespace, root in dependency_skill_roots(layout):
+        if not root.exists():
+            continue
+        if root.is_symlink() or not root.is_dir():
+            raise SyncError(f"Skill root is missing or unsafe: {root}")
+        for candidate in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
+            if candidate.name.startswith(".") or candidate.name == ".system":
+                continue
+            if candidate.is_symlink() or not candidate.is_dir():
+                continue
+            skill_file = candidate / "SKILL.md"
+            if skill_file.is_symlink() or not skill_file.is_file():
+                continue
+            ref = SkillRef(namespace=namespace, name=candidate.name, root=candidate)
+            keys = {ref.name.casefold(), ref.logical_id.casefold()}
+            if requested and requested.isdisjoint(keys):
+                continue
+            matched.update(requested.intersection(keys))
+            discovered.append(ref)
+            if len(discovered) > MAX_DEPENDENCY_SKILLS:
+                raise SyncError(
+                    f"Dependency scan exceeds {MAX_DEPENDENCY_SKILLS} Skills."
+                )
+    missing = sorted(requested - matched)
+    if missing:
+        raise SyncError(f"Unknown Skill selector(s): {', '.join(missing)}")
+    return discovered
+
+
+def duplicate_rejecting_object(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate key: {key}")
+        result[key] = value
+    return result
+
+
+def read_dependency_manifest(path: Path) -> dict:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise SyncError(f"Cannot safely open dependency manifest: {path}: {exc}") from exc
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise SyncError(f"Dependency manifest must be one regular, non-linked file: {path}")
+            if info.st_size > MAX_DEPENDENCY_MANIFEST_BYTES:
+                raise SyncError(f"Dependency manifest exceeds 16 KiB: {path}")
+            raw = handle.read(MAX_DEPENDENCY_MANIFEST_BYTES + 1)
+    except OSError as exc:
+        raise SyncError(f"Cannot read dependency manifest: {path}: {exc}") from exc
+    if len(raw) > MAX_DEPENDENCY_MANIFEST_BYTES:
+        raise SyncError(f"Dependency manifest exceeds 16 KiB: {path}")
+    if secret_content_shape(raw):
+        raise SyncError(f"Dependency manifest contains secret-shaped content: {path}")
+    try:
+        value = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=duplicate_rejecting_object
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise SyncError(f"Dependency manifest is not strict UTF-8 JSON: {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise SyncError(f"Dependency manifest must be a JSON object: {path}")
+    return value
+
+
+def load_dependency_needs(skill: SkillRef) -> tuple[bool, list[DependencyNeed], list[str]]:
+    path = skill.root / "dependencies.json"
+    if not path.exists():
+        return False, [], []
+    if path.is_symlink() or not path.is_file():
+        return True, [], ["dependencies.json is not a safe regular file"]
+    try:
+        document = read_dependency_manifest(path)
+    except SyncError as exc:
+        return True, [], [str(exc)]
+    allowed_keys = {"schema", "requires", "optional"}
+    unknown_keys = sorted(set(document) - allowed_keys)
+    if unknown_keys:
+        return True, [], [f"unknown manifest field(s): {', '.join(unknown_keys)}"]
+    if document.get("schema") != DEPENDENCY_SCHEMA:
+        return True, [], [f"schema must equal {DEPENDENCY_SCHEMA}"]
+    requires = document.get("requires")
+    optional = document.get("optional", [])
+    if not isinstance(requires, list) or not isinstance(optional, list):
+        return True, [], ["requires and optional must be JSON arrays"]
+    if len(requires) + len(optional) > MAX_DEPENDENCIES_PER_SKILL:
+        return True, [], [f"manifest exceeds {MAX_DEPENDENCIES_PER_SKILL} dependencies"]
+    issues: list[str] = []
+    normalized: dict[str, bool] = {}
+    for required, values in ((True, requires), (False, optional)):
+        seen: set[str] = set()
+        for value in values:
+            if not isinstance(value, str) or DEPENDENCY_ID_RE.fullmatch(value) is None:
+                issues.append(f"invalid dependency ID: {value!r}")
+                continue
+            if value in seen:
+                issues.append(f"duplicate dependency ID: {value}")
+                continue
+            seen.add(value)
+            if value not in DEPENDENCY_CATALOG:
+                issues.append(f"dependency ID is not in catalog v{DEPENDENCY_CATALOG_VERSION}: {value}")
+                continue
+            if value in normalized and normalized[value] != required:
+                issues.append(f"dependency cannot be both required and optional: {value}")
+                continue
+            normalized[value] = required
+    needs = [
+        DependencyNeed(dependency_id=value, required=required, source="manifest")
+        for value, required in sorted(normalized.items())
+    ]
+    return True, needs, issues
+
+
+def standard_library_modules() -> set[str]:
+    names = set(sys.builtin_module_names)
+    available = getattr(sys, "stdlib_module_names", None)
+    if available:
+        names.update(available)
+    names.update({
+        "__future__", "fcntl", "grp", "msvcrt", "pwd", "resource", "termios",
+        "tkinter", "turtle", "venv", "winreg", "winsound",
+    })
+    try:
+        root = Path(sysconfig.get_paths()["stdlib"])
+        for child in root.iterdir():
+            if child.name in {"site-packages", "dist-packages", "__pycache__"}:
+                continue
+            if child.is_dir():
+                names.add(child.name)
+            elif child.suffix.lower() in {".py", ".pyc", ".pyd", ".so", ".dylib"}:
+                names.add(child.stem.split(".")[0])
+    except (KeyError, OSError):
+        pass
+    return names
+
+
+def local_python_modules(skill: SkillRef) -> set[str]:
+    names = {"scripts"}
+    roots = [skill.root, skill.root / "scripts"]
+    for root in roots:
+        if not root.is_dir() or root.is_symlink():
+            continue
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.is_symlink():
+                continue
+            if child.is_file() and child.suffix == ".py":
+                names.add(child.stem)
+            elif child.is_dir() and not child.name.startswith("."):
+                names.add(child.name)
+    return names
+
+
+def python_source_files(skill: SkillRef) -> tuple[list[Path], list[str]]:
+    files: list[Path] = []
+    warnings: list[str] = []
+    total_bytes = 0
+    for current, dirnames, filenames in os.walk(skill.root, followlinks=False):
+        current_path = Path(current)
+        dirnames[:] = sorted(
+            name for name in dirnames
+            if not name.startswith(".")
+            and name.lower() not in EXCLUDED_DIRS
+            and not (current_path / name).is_symlink()
+        )
+        for name in sorted(filenames):
+            if not name.endswith(".py"):
+                continue
+            path = current_path / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                size = path.stat().st_size
+                if size > MAX_PYTHON_SOURCE_BYTES:
+                    warnings.append(f"skipped Python source larger than 2 MiB: {path.name}")
+                    continue
+            except OSError:
+                warnings.append(f"could not inspect Python source: {path.name}")
+                continue
+            if total_bytes + size > MAX_PYTHON_TOTAL_BYTES:
+                warnings.append("Python source scan stopped at 16 MiB per Skill")
+                return files, warnings
+            files.append(path)
+            total_bytes += size
+            if len(files) >= MAX_PYTHON_FILES_PER_SKILL:
+                warnings.append(
+                    f"Python source scan stopped at {MAX_PYTHON_FILES_PER_SKILL} files"
+                )
+                return files, warnings
+    return files, warnings
+
+
+def read_python_source_safe(path: Path) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise SyncError(f"Cannot safely open Python source: {path.name}: {exc}") from exc
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_PYTHON_SOURCE_BYTES:
+                raise SyncError(f"Python source changed type or size: {path.name}")
+            raw = handle.read(MAX_PYTHON_SOURCE_BYTES + 1)
+            if len(raw) > MAX_PYTHON_SOURCE_BYTES:
+                raise SyncError(f"Python source changed size: {path.name}")
+            return raw
+    except OSError as exc:
+        raise SyncError(f"Cannot safely read Python source: {path.name}: {exc}") from exc
+
+
+def inferred_python_needs(
+    skill: SkillRef,
+) -> tuple[list[DependencyNeed], list[str], list[dict]]:
+    stdlib = standard_library_modules()
+    local = local_python_modules(skill)
+    files, warnings = python_source_files(skill)
+    for path in files:
+        local.add(path.stem)
+        try:
+            for sibling in path.parent.iterdir():
+                if sibling.is_symlink():
+                    continue
+                if sibling.is_file() and sibling.suffix == ".py":
+                    local.add(sibling.stem)
+                elif sibling.is_dir() and not sibling.name.startswith("."):
+                    local.add(sibling.name)
+        except OSError:
+            warnings.append(f"could not inspect local modules beside {path.name}")
+    imports: set[str] = set()
+    for path in files:
+        try:
+            raw = read_python_source_safe(path)
+            tree = ast.parse(raw.decode("utf-8-sig"), filename=path.name)
+        except (SyncError, UnicodeDecodeError, SyntaxError) as exc:
+            warnings.append(f"could not parse {path.name}: {exc}")
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imports.add(node.module.split(".", 1)[0])
+    needs: list[DependencyNeed] = []
+    unmanaged: list[dict] = []
+    for module in sorted(imports, key=str.casefold):
+        if module in stdlib or module in local:
+            continue
+        dependency_id = PYTHON_IMPORT_CATALOG.get(module)
+        if dependency_id:
+            needs.append(DependencyNeed(
+                dependency_id=dependency_id,
+                required=True,
+                source=f"python-import:{module}",
+            ))
+            continue
+        try:
+            present = importlib.util.find_spec(module) is not None
+        except (ImportError, ModuleNotFoundError, ValueError, AttributeError):
+            present = False
+        unmanaged.append({
+            "kind": "python_import",
+            "module": module,
+            "status": "present_unmanaged" if present else "missing_unmanaged",
+            "detail": (
+                "Import exists locally but has no audited catalog installer."
+                if present else
+                "Import is missing and has no audited catalog installer."
+            ),
+        })
+    return needs, warnings, unmanaged
+
+
+def merge_dependency_needs(needs: Iterable[DependencyNeed]) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for need in needs:
+        record = merged.setdefault(need.dependency_id, {
+            "dependency_id": need.dependency_id,
+            "required": False,
+            "sources": set(),
+        })
+        record["required"] = bool(record["required"] or need.required)
+        record["sources"].add(need.source)
+    return [
+        {
+            "dependency_id": dependency_id,
+            "required": record["required"],
+            "sources": sorted(record["sources"]),
+        }
+        for dependency_id, record in sorted(merged.items())
+    ]
+
+
+def probe_dependency(dependency_id: str, host: str) -> dict:
+    entry = DEPENDENCY_CATALOG[dependency_id]
+    result = {
+        "dependency_id": dependency_id,
+        "kind": entry["kind"],
+        "status": "missing",
+        "detail": "",
+    }
+    if host not in entry["platforms"]:
+        result.update({
+            "status": "unsupported",
+            "detail": f"Not supported on {host}.",
+        })
+        return result
+    if entry["kind"] == "python_runtime":
+        minimum = tuple(entry["minimum"])
+        ready = sys.version_info[:2] >= minimum
+        result.update({
+            "status": "ready" if ready else "missing",
+            "detail": (
+                f"Python {sys.version_info.major}.{sys.version_info.minor} satisfies "
+                f">={minimum[0]}.{minimum[1]}."
+                if ready else f"Python >={minimum[0]}.{minimum[1]} is required."
+            ),
+        })
+    elif entry["kind"] == "python_module":
+        module = entry["module"]
+        try:
+            ready = importlib.util.find_spec(module) is not None
+        except (ImportError, ModuleNotFoundError, ValueError, AttributeError):
+            ready = False
+        result.update({
+            "status": "ready" if ready else "missing",
+            "check": f"python module {module} discoverability",
+            "detail": f"Python module {module} is {'discoverable' if ready else 'missing'}.",
+        })
+    elif entry["kind"] == "command":
+        command = entry["command"]
+        ready = shutil.which(command) is not None
+        result.update({
+            "status": "ready" if ready else "missing",
+            "check": f"command {command}",
+            "detail": f"Command {command} is {'available' if ready else 'missing from PATH'}.",
+        })
+    elif entry["kind"] == "app":
+        ready = any(Path(path).is_dir() for path in entry.get("paths", {}).get(host, ()))
+        result.update({
+            "status": "ready" if ready else "missing",
+            "detail": f"Application is {'installed' if ready else 'not installed'} on {host}.",
+        })
+    elif entry["kind"] == "external":
+        result.update({
+            "status": "manual",
+            "detail": entry["detail"],
+        })
+    return result
+
+
+def dependency_scan_document(
+    layout: Layout,
+    selectors: Iterable[str] | None = None,
+    *,
+    host: str | None = None,
+) -> dict:
+    host = host or dependency_platform()
+    skills: list[dict] = []
+    for skill in discover_skills(layout, selectors):
+        manifest_present, declared, manifest_issues = load_dependency_needs(skill)
+        inferred, scan_warnings, unmanaged = inferred_python_needs(skill)
+        dependencies: list[dict] = []
+        for need in merge_dependency_needs([*declared, *inferred]):
+            finding = probe_dependency(need["dependency_id"], host)
+            finding.update({
+                "required": need["required"],
+                "sources": need["sources"],
+            })
+            dependencies.append(finding)
+        required_blocked = any(
+            item["required"] and item["status"] != "ready" for item in dependencies
+        ) or any(item["status"] == "missing_unmanaged" for item in unmanaged)
+        optional_missing = any(
+            not item["required"] and item["status"] != "ready" for item in dependencies
+        )
+        if manifest_issues:
+            state = "invalid"
+            verification = "blocked"
+        elif required_blocked:
+            state = "blocked"
+            verification = "blocked"
+        elif not manifest_present or unmanaged or scan_warnings:
+            state = "legacy_unmanaged"
+            verification = "partial"
+        elif optional_missing:
+            state = "ready_optional_missing"
+            verification = "verified"
+        else:
+            state = "ready"
+            verification = "verified"
+        skills.append({
+            "skill": skill.logical_id,
+            "name": skill.name,
+            "manifest": "present" if manifest_present else "legacy_missing",
+            "state": state,
+            "verification": verification,
+            "dependencies": dependencies,
+            "unmanaged": unmanaged,
+            "issues": manifest_issues,
+            "warnings": scan_warnings,
+        })
+    state_counts: dict[str, int] = {}
+    dependency_counts = {"ready": 0, "missing": 0, "manual": 0, "unsupported": 0}
+    for skill in skills:
+        state_counts[skill["state"]] = state_counts.get(skill["state"], 0) + 1
+        for dependency in skill["dependencies"]:
+            status = dependency["status"]
+            dependency_counts[status] = dependency_counts.get(status, 0) + 1
+        for unmanaged in skill["unmanaged"]:
+            status = unmanaged["status"]
+            dependency_counts[status] = dependency_counts.get(status, 0) + 1
+    fully_verified = all(skill["verification"] == "verified" for skill in skills)
+    required_ready = all(skill["verification"] != "blocked" for skill in skills)
+    return {
+        "schema_version": 1,
+        "tool_version": TOOL_VERSION,
+        "catalog_version": DEPENDENCY_CATALOG_VERSION,
+        "platform": host,
+        "fully_verified": fully_verified,
+        "required_ready": required_ready,
+        "counts": {
+            "skills": len(skills),
+            "skill_states": dict(sorted(state_counts.items())),
+            "dependencies": dict(sorted(dependency_counts.items())),
+        },
+        "skills": skills,
+    }
+
+
+def dependency_manager_executable(manager: str, host: str) -> str | None:
+    if manager == "pip":
+        try:
+            return sys.executable if importlib.util.find_spec("pip") is not None else None
+        except (ImportError, ModuleNotFoundError, ValueError, AttributeError):
+            return None
+    if manager == "brew" and host != "macos":
+        return None
+    if manager == "winget" and host != "windows":
+        return None
+    return shutil.which(manager)
+
+
+def dependency_python_target() -> str | None:
+    """Return a user-owned import path for non-virtualenv pip installs.
+
+    ``pip --user`` is rejected by PEP 668 externally-managed interpreters such
+    as current Homebrew Python.  Installing explicitly into the interpreter's
+    user site keeps package files out of the managed prefix while preserving
+    normal import behavior on the next interpreter start.
+    """
+    if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
+        return None
+    if not site.ENABLE_USER_SITE:
+        raise SyncError("Python user-site packages are disabled outside a virtual environment")
+    user_site = site.getusersitepackages()
+    if not isinstance(user_site, str) or not user_site.strip():
+        raise SyncError("Python did not provide a usable user-site package directory")
+    target = Path(user_site).expanduser().resolve(strict=False)
+    home = Path.home().resolve(strict=False)
+    try:
+        target.relative_to(home)
+    except ValueError as exc:
+        raise SyncError("Python user-site package directory is outside the user home") from exc
+    if target == home:
+        raise SyncError("Python user-site package directory resolves to the user home")
+    return str(target)
+
+
+def dependency_install_argv(manager: str, package: str, host: str) -> tuple[list[str], str]:
+    executable = dependency_manager_executable(manager, host)
+    if not executable:
+        raise SyncError(f"Required package manager is missing: {manager}")
+    if manager == "pip":
+        actual = [executable, "-m", "pip", "--isolated", "install"]
+        display = [executable, "-m", "pip", "--isolated", "install"]
+        target = dependency_python_target()
+        if target is not None:
+            actual.extend(["--target", target])
+            display.extend(["--target", target])
+        common = [
+            "--disable-pip-version-check", "--no-input", "--only-binary=:all:",
+            "--index-url", "https://pypi.org/simple", package,
+        ]
+        actual.extend(common)
+        display.extend(common)
+    elif manager == "npm":
+        actual = [
+            executable, "install", "--global", "--ignore-scripts",
+            "--registry", "https://registry.npmjs.org/", package,
+        ]
+        display = [
+            executable, "install", "--global", "--ignore-scripts",
+            "--registry", "https://registry.npmjs.org/", package,
+        ]
+    elif manager == "brew":
+        actual = [executable, "install", package]
+        display = [executable, "install", package]
+    elif manager == "winget":
+        actual = [
+            executable, "install", "--id", package, "--exact", "--source", "winget",
+            "--accept-source-agreements",
+        ]
+        display = [
+            executable, "install", "--id", package, "--exact", "--source", "winget",
+            "--accept-source-agreements",
+        ]
+    else:
+        raise SyncError(f"Unsupported dependency manager: {manager}")
+    command = subprocess.list2cmdline(display) if host == "windows" else shlex.join(display)
+    return actual, command
+
+
+def dependency_action_for(
+    dependency_id: str,
+    status: str,
+    host: str,
+    required: bool,
+    skills: list[str],
+) -> dict | None:
+    if status == "ready":
+        return None
+    entry = DEPENDENCY_CATALOG[dependency_id]
+    if entry["kind"] == "python_module":
+        verification = f"builtin probe: Python module {entry['module']} is discoverable"
+    elif entry["kind"] == "command":
+        verification = f"builtin probe: command {entry['command']} in PATH"
+    elif entry["kind"] == "python_runtime":
+        minimum = entry["minimum"]
+        verification = f"builtin probe: Python >= {minimum[0]}.{minimum[1]}"
+    elif entry["kind"] == "app":
+        verification = "builtin probe: platform application location"
+    else:
+        verification = "manual local verification"
+    install = entry.get("install", {}).get(host)
+    if entry["kind"] == "python_module":
+        install = ("pip", entry["package"])
+    action = {
+        "dependency_id": dependency_id,
+        "required": required,
+        "skills": sorted(skills),
+        "status": status,
+        "action": "blocked",
+        "manager": None,
+        "package": None,
+        "command": None,
+        "verification": verification,
+        "blocker": None,
+    }
+    if status in {"manual", "unsupported"}:
+        action["blocker"] = (
+            "manual local configuration required" if status == "manual"
+            else f"unsupported on {host}"
+        )
+        return action
+    if not install:
+        action["blocker"] = "no audited installer is available"
+        return action
+    manager, package = install
+    action["manager"] = manager
+    action["package"] = package
+    try:
+        argv, command = dependency_install_argv(manager, package, host)
+    except SyncError as exc:
+        action["blocker"] = str(exc)
+        return action
+    action.update({
+        "action": "install",
+        "command": command,
+        "blocker": None,
+        "_argv": argv,
+    })
+    return action
+
+
+def dependency_plan_document(
+    layout: Layout,
+    selectors: Iterable[str] | None = None,
+    *,
+    host: str | None = None,
+) -> tuple[dict, list[dict]]:
+    host = host or dependency_platform()
+    scan = dependency_scan_document(layout, selectors, host=host)
+    aggregate: dict[str, dict] = {}
+    blockers: list[dict] = []
+    advisories: list[dict] = []
+    for skill in scan["skills"]:
+        for dependency in skill["dependencies"]:
+            if dependency["status"] == "ready":
+                continue
+            record = aggregate.setdefault(dependency["dependency_id"], {
+                "required": False,
+                "skills": [],
+                "statuses": set(),
+            })
+            record["required"] = bool(record["required"] or dependency["required"])
+            record["skills"].append(skill["skill"])
+            record["statuses"].add(dependency["status"])
+        for issue in skill["issues"]:
+            blockers.append({
+                "skill": skill["skill"], "kind": "invalid_manifest", "detail": issue,
+            })
+        for unmanaged in skill["unmanaged"]:
+            target = blockers if unmanaged["status"] == "missing_unmanaged" else advisories
+            target.append({
+                "skill": skill["skill"], "kind": unmanaged["status"],
+                "detail": f"python import {unmanaged['module']}: {unmanaged['detail']}",
+            })
+        if skill["manifest"] == "legacy_missing":
+            advisories.append({
+                "skill": skill["skill"], "kind": "legacy_no_manifest",
+                "detail": "No dependencies.json; documentation-only dependencies are not guessed.",
+            })
+        for warning in skill["warnings"]:
+            advisories.append({
+                "skill": skill["skill"], "kind": "scan_warning", "detail": warning,
+            })
+    internal_actions: list[dict] = []
+    for dependency_id, record in sorted(aggregate.items()):
+        statuses = sorted(record["statuses"])
+        status = "missing"
+        if "unsupported" in statuses:
+            status = "unsupported"
+        elif "manual" in statuses:
+            status = "manual"
+        action = dependency_action_for(
+            dependency_id,
+            status,
+            host,
+            record["required"],
+            sorted(set(record["skills"])),
+        )
+        if action:
+            internal_actions.append(action)
+    public_actions = [
+        {key: value for key, value in action.items() if not key.startswith("_")}
+        for action in internal_actions
+    ]
+    payload = {
+        "catalog_version": DEPENDENCY_CATALOG_VERSION,
+        "platform": host,
+        "python_executable": sys.executable,
+        "selectors": sorted(selectors or []),
+        "scan": scan,
+        "actions": public_actions,
+        "blockers": sorted(blockers, key=lambda item: (item["skill"], item["kind"], item["detail"])),
+        "advisories": sorted(advisories, key=lambda item: (item["skill"], item["kind"], item["detail"])),
+    }
+    plan_id = canonical_hash(payload, length=24)
+    counts = {
+        "install": sum(action["action"] == "install" for action in public_actions),
+        "blocked_required": sum(
+            action["action"] == "blocked" and action["required"] for action in public_actions
+        ) + len(blockers),
+        "optional_unavailable": sum(
+            action["action"] == "blocked" and not action["required"] for action in public_actions
+        ),
+        "advisory": len(advisories),
+        "already_ready": scan["counts"]["dependencies"].get("ready", 0),
+    }
+    document = {
+        "schema_version": 1,
+        "tool_version": TOOL_VERSION,
+        "catalog_version": DEPENDENCY_CATALOG_VERSION,
+        "platform": host,
+        "plan_id": plan_id,
+        "counts": counts,
+        "actions": public_actions,
+        "blockers": payload["blockers"],
+        "advisories": payload["advisories"],
+        "fully_verified_before_install": scan["fully_verified"],
+        "required_ready_before_install": scan["required_ready"],
+    }
+    return document, internal_actions
+
+
+def print_dependency_scan(document: dict) -> None:
+    counts = document["counts"]
+    print(f"Dependency platform: {document['platform']}")
+    print(f"Skills scanned: {counts['skills']}")
+    print("Skill states: " + json.dumps(counts["skill_states"], ensure_ascii=False, sort_keys=True))
+    print("Dependency states: " + json.dumps(counts["dependencies"], ensure_ascii=False, sort_keys=True))
+    for skill in document["skills"]:
+        if skill["state"] == "ready":
+            continue
+        print(f"{skill['state'].upper()}  {skill['skill']}")
+        for dependency in skill["dependencies"]:
+            if dependency["status"] != "ready":
+                print(
+                    f"  {dependency['status'].upper()} {dependency['dependency_id']} "
+                    f"({dependency['detail']})"
+                )
+        for unmanaged in skill["unmanaged"]:
+            print(f"  {unmanaged['status'].upper()} python import {unmanaged['module']}")
+        for issue in skill["issues"]:
+            print(f"  INVALID {issue}")
+        for warning in skill["warnings"]:
+            print(f"  WARNING {warning}")
+    print("Dependency verification: " + ("complete" if document["fully_verified"] else "incomplete"))
+
+
+def print_dependency_plan(document: dict) -> None:
+    print(f"Dependency Plan ID: {document['plan_id']}")
+    print(
+        f"Summary: install={document['counts']['install']}, "
+        f"blocked_required={document['counts']['blocked_required']}, "
+        f"optional_unavailable={document['counts']['optional_unavailable']}, "
+        f"advisory={document['counts']['advisory']}, "
+        f"already_ready={document['counts']['already_ready']}"
+    )
+    for action in document["actions"]:
+        if action["action"] == "install":
+            print(f"INSTALL {action['dependency_id']} for {', '.join(action['skills'])}")
+            print(f"  {action['command']}")
+            print(f"  verify: {action['verification']}")
+        else:
+            label = "BLOCKED" if action["required"] else "OPTIONAL UNAVAILABLE"
+            print(
+                f"{label} {action['dependency_id']} for {', '.join(action['skills'])}: "
+                f"{action['blocker']}"
+            )
+    for blocker in document["blockers"]:
+        print(f"BLOCKED {blocker['skill']}: {blocker['detail']}")
+    for advisory in document["advisories"]:
+        print(f"ADVISORY {advisory['skill']}: {advisory['detail']}")
+    print(f"To install exactly this plan: deps install --plan {document['plan_id']}")
+
+
+def dependency_subprocess_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    for name in list(environment):
+        normalized = name.upper()
+        if normalized.startswith("PIP_") or normalized.startswith("NPM_CONFIG_"):
+            environment.pop(name, None)
+    for name in (
+        "NODE_OPTIONS", "NODE_PATH", "PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE",
+        "PYTHONNOUSERSITE", "RUBYOPT",
+    ):
+        environment.pop(name, None)
+    return environment
+
+
+def execute_dependency_actions(actions: list[dict], host: str) -> None:
+    for action in actions:
+        if action["action"] != "install":
+            continue
+        print(f"Installing {action['dependency_id']}")
+        print(f"Command: {action['command']}")
+        result = subprocess.run(
+            action["_argv"],
+            shell=False,
+            check=False,
+            env=dependency_subprocess_environment(),
+        )
+        if result.returncode != 0:
+            raise SyncError(
+                f"Dependency installer exited {result.returncode}: {action['dependency_id']}"
+            )
+        if action.get("manager") == "pip":
+            user_site = dependency_python_target()
+            if user_site is not None and user_site not in sys.path and Path(user_site).is_dir():
+                # Do not use site.addsitedir(): it executes import lines from .pth files.
+                sys.path.append(user_site)
+        importlib.invalidate_caches()
+        verification = probe_dependency(action["dependency_id"], host)
+        if verification["status"] != "ready":
+            raise SyncError(
+                f"Installation completed but verification failed for {action['dependency_id']}: "
+                f"{verification['detail']}"
+            )
+        print(f"Verified {action['dependency_id']}")
+
+
+def cmd_deps(args: argparse.Namespace, layout: Layout) -> int:
+    selectors = getattr(args, "skill", None) or []
+    operation = args.deps_command
+    if operation in {"status", "verify"}:
+        document = dependency_scan_document(layout, selectors)
+        if args.json:
+            print(json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print_dependency_scan(document)
+            if not document["fully_verified"]:
+                print("Run deps plan to review supported installation commands and blockers.")
+        return 0 if document["fully_verified"] else 2
+    document, actions = dependency_plan_document(layout, selectors)
+    if operation == "plan":
+        if args.json:
+            print(json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print_dependency_plan(document)
+        return 0
+    if operation != "install":
+        raise SyncError(f"Unknown dependency operation: {operation}")
+    if args.plan != document["plan_id"]:
+        raise SyncError(
+            f"Dependency plan changed: reviewed {args.plan}, current {document['plan_id']}. "
+            "No dependency installers were started; run deps plan again."
+        )
+    with LocalDependencyLock(layout.state_home):
+        refreshed, refreshed_actions = dependency_plan_document(layout, selectors)
+        if refreshed["plan_id"] != args.plan:
+            raise SyncError(
+                "Dependency plan changed during final verification. "
+                "No dependency installers were started; run deps plan again."
+            )
+        execute_dependency_actions(refreshed_actions, refreshed["platform"])
+    final = dependency_scan_document(layout, selectors)
+    print_dependency_scan(final)
+    if final["fully_verified"]:
+        print("Dependency installation and verification complete")
+        return 0
+    if final["required_ready"]:
+        print("Supported installations verified; unmanaged or optional advisories remain.")
+        return 0
+    print("Supported installations finished; required unresolved dependencies remain.")
+    return 2
+
+
 def rel_is_safe(rel: str, config: dict) -> bool:
     if (
         not isinstance(rel, str)
@@ -816,6 +1875,10 @@ def rel_is_safe(rel: str, config: dict) -> bool:
         return False
     pure = PurePosixPath(rel)
     if pure.is_absolute() or ".." in pure.parts or not pure.parts:
+        return False
+    if rel.startswith(("agents/skills/codex-sync/", "codex/skills/codex-sync/")):
+        # Codex Sync itself is installed/updated through its release channel.
+        # Synchronizing its executable runtime can create a partial or unsafe copy.
         return False
     prefixes = ["agents/skills/", "codex/skills/"]
     agents_file_selected = False
@@ -859,7 +1922,9 @@ def collect_local(layout: Layout, config: dict) -> dict[str, Path]:
             continue
         for path in iter_tree(root):
             rel = path.relative_to(root).as_posix()
-            result[f"{namespace}/{rel}"] = path
+            full_rel = f"{namespace}/{rel}"
+            if rel_is_safe(full_rel, config):
+                result[full_rel] = path
     validate_collection(result, "local selection")
     return result
 
@@ -1469,7 +2534,13 @@ def cmd_doctor(args: argparse.Namespace, layout: Layout) -> int:
     print(f"Memories: {'included' if config['include_memories'] else 'excluded'}")
     total = 0
     for namespace, root in source_specs(layout, config):
-        count = 1 if root.is_file() else sum(1 for _ in iter_tree(root))
+        if root.is_file():
+            count = 1
+        else:
+            count = sum(
+                1 for path in iter_tree(root)
+                if rel_is_safe(f"{namespace}/{path.relative_to(root).as_posix()}", config)
+            )
         total += count
         print(f"Selected: {namespace} ({count} files; {'present' if root.exists() else 'missing'})")
     print(f"Total selected files: {total}")
@@ -2146,6 +3217,26 @@ def parser() -> argparse.ArgumentParser:
     memory.add_argument("--include-memories", action="store_true")
     memory.add_argument("--exclude-memories", action="store_true")
 
+    deps = sub.add_parser(
+        "deps",
+        help="scan, plan, install, and verify local Skill dependencies",
+    )
+    deps_sub = deps.add_subparsers(dest="deps_command", required=True)
+    for name, help_text in (
+        ("status", "scan every local Skill and report dependency readiness"),
+        ("plan", "show exact supported installation commands and blockers"),
+        ("verify", "verify declared and inferred dependencies without installing"),
+    ):
+        dependency_command = deps_sub.add_parser(name, help=help_text)
+        dependency_command.add_argument("--json", action="store_true")
+        dependency_command.add_argument("--skill", action="append", metavar="SKILL")
+    dependency_install = deps_sub.add_parser(
+        "install",
+        help="install only the exact reviewed dependency plan, then verify",
+    )
+    dependency_install.add_argument("--plan", required=True, metavar="DEPENDENCY_PLAN_ID")
+    dependency_install.add_argument("--skill", action="append", metavar="SKILL")
+
     sub.add_parser("doctor", help="check configuration and selected paths")
     status = sub.add_parser("status", help="show planned actions")
     status.add_argument("--summary-only", action="store_true")
@@ -2185,6 +3276,7 @@ def main(argv: list[str] | None = None) -> int:
         "join": cmd_join,
         "init": cmd_init,
         "configure": cmd_configure,
+        "deps": cmd_deps,
         "doctor": cmd_doctor,
         "status": cmd_status,
         "sync": cmd_sync,

@@ -5,7 +5,7 @@ description: Safely share user-authored Codex Skills between macOS and Windows c
 
 # Codex Sync
 
-Use `scripts/codex_sync.py` for every operation. Version 0.4 supports macOS and Windows, defaults to the `skills` scope, shares Skills as a two-way union, and adds `sync-now` for automatic receipt verification and conflict-free handoffs. Manual Plan IDs, three-way comparison, locks, backups, snapshots, conflict refusal, and no deletion propagation remain available.
+Use `scripts/codex_sync.py` for every operation. Version 0.5 supports macOS and Windows, defaults to the `skills` scope, shares Skills as a two-way union, adds `sync-now` for automatic receipt verification and conflict-free handoffs, and adds a required local dependency-readiness check to the quick-sync workflow. Manual Plan IDs, three-way comparison, locks, backups, snapshots, conflict refusal, and no deletion propagation remain available.
 
 The user supplies and controls the transport. Codex Sync does not provide storage, does not use a folder owned by the author, and does not send synchronized content to the author.
 
@@ -24,6 +24,38 @@ py scripts\codex_sync.py sync-now
 ```
 
 The complete routine is: run on computer A, wait for the private shared folder to finish propagating, then run on computer B. `sync-now` chooses the newest successful handoff receipt automatically. If any selected path conflicts, it stops before changing selected files; report the conflict paths and use the explicit resolution workflow.
+
+After every successful `sync-now`, run dependency status on the current device before declaring synchronized Skills ready:
+
+```bash
+python3 scripts/codex_sync.py deps status
+```
+
+```powershell
+py scripts\codex_sync.py deps status
+```
+
+`deps status` scans `~/.agents/skills` and `~/.codex/skills` (excluding `.system`), reads `dependencies.json`, and statically inspects common Python imports. It does not execute Skill text, URLs, or scripts. Report `legacy_unmanaged`, `partial`, or `blocked` exactly as returned; a dependency probe does not prove that a Skill's business workflow works.
+
+## Dependency installation requires a reviewed plan
+
+If `deps status` is incomplete, run `deps plan` and show the user the complete output: the exact Dependency Plan ID, every controlled package-manager command, every required blocker or optional gap, and the legacy advisories. Do **not** run an installer merely because the user asked for a quick sync or a readiness check.
+
+Run `deps install --plan "<DEPENDENCY_PLAN_ID>"` only after the user has seen and explicitly approved that exact Plan ID and its commands. The command regenerates and compares the plan before installers start; a changed ID means no installer runs. Use only the bundled controlled `pip`, `npm`, `brew`, or `winget` argv. Package-manager installation is non-transactional and may require system permission or package-source/EULA acceptance.
+
+```bash
+python3 scripts/codex_sync.py deps plan
+python3 scripts/codex_sync.py deps install --plan "<DEPENDENCY_PLAN_ID>"
+python3 scripts/codex_sync.py deps verify
+```
+
+```powershell
+py scripts\codex_sync.py deps plan
+py scripts\codex_sync.py deps install --plan "<DEPENDENCY_PLAN_ID>"
+py scripts\codex_sync.py deps verify
+```
+
+Dependency installation changes only the current device. It never writes the Store, receipts, or synchronized Skill files. Read [references/dependencies.md](references/dependencies.md) before creating or migrating a manifest.
 
 ## Create the first device
 
@@ -107,7 +139,7 @@ If a killed process leaves a lock, inspect it with `unlock`. Use `unlock --force
 
 ## Safety boundary
 
-- Allowed by default in `skills` scope: `~/.agents/skills` and `~/.codex/skills` except `.system`.
+- Allowed by default in `skills` scope: `~/.agents/skills` and `~/.codex/skills` except `.system`, the `codex-sync` runtime itself, and `.codex-sync-*` installer staging/backup directories. Install Codex Sync separately on each device through its release source.
 - Device configuration is excluded by default: `~/.codex/rules` and `~/.codex/AGENTS.md` are selected only with explicit `--scope all` or `configure --scope all`.
 - Configurations created by 0.2 retain `all` for compatibility. To adopt Skills-only sharing, update both computers and run `configure --scope skills` on each one. Scope changes never delete files, and receipt verification rejects different scopes.
 - Optional: `~/.codex/memories`, enabled only during `create --include-memories`, `join --include-memories`, or `configure --include-memories`.

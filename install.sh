@@ -39,7 +39,9 @@ esac
 skills_dir="$codex_home/skills"
 destination="$skills_dir/codex-sync"
 
-if [ ! -f "$source_dir/SKILL.md" ] || [ ! -f "$source_dir/scripts/codex_sync.py" ]; then
+if [ ! -f "$source_dir/SKILL.md" ] || \
+   [ ! -f "$source_dir/dependencies.json" ] || \
+   [ ! -f "$source_dir/scripts/codex_sync.py" ]; then
   echo "ERROR: Codex Sync Skill files are missing from $source_dir." >&2
   exit 1
 fi
@@ -65,7 +67,8 @@ stage_package="$stage_dir/codex-sync"
 mkdir "$stage_package"
 cp -R "$source_dir/." "$stage_package/"
 
-if ! python3 "$stage_package/scripts/codex_sync.py" --help >/dev/null; then
+if ! python3 "$stage_package/scripts/codex_sync.py" --help >/dev/null || \
+   ! python3 "$stage_package/scripts/codex_sync.py" deps --help >/dev/null; then
   echo "ERROR: Staged runtime failed its self-check; the existing installation was not changed." >&2
   exit 1
 fi

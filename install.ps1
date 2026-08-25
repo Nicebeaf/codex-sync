@@ -37,6 +37,7 @@ $skillsDir = Join-Path $codexHome "skills"
 $destination = Join-Path $skillsDir "codex-sync"
 
 if (-not (Test-Path -LiteralPath (Join-Path $sourceDir "SKILL.md") -PathType Leaf) -or
+    -not (Test-Path -LiteralPath (Join-Path $sourceDir "dependencies.json") -PathType Leaf) -or
     -not (Test-Path -LiteralPath (Join-Path $sourceDir "scripts\codex_sync.py") -PathType Leaf)) {
     throw "Codex Sync Skill files are missing from $sourceDir."
 }
@@ -97,6 +98,10 @@ try {
     & $pythonCommand @pythonPrefix $runtime --help | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Staged runtime failed its self-check; the existing installation was not changed."
+    }
+    & $pythonCommand @pythonPrefix $runtime deps --help | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Staged dependency runtime failed its self-check; the existing installation was not changed."
     }
 
     if (Test-Path -LiteralPath $destination -PathType Container) {
