@@ -17,6 +17,7 @@ All notable changes to Codex Sync are documented here.
 - Legacy Skills without a manifest remain `legacy_unmanaged`; unknown imports, malformed manifests, unsupported platforms, and manual dependencies remain partial or blocked.
 - `deps verify` checks declared and inferred dependency probes only. It is not a complete Skill business-workflow test.
 - Package-manager installation is non-transactional and can require system permissions or package-source/EULA acceptance.
+- Non-virtualenv Python packages use an explicit user-site `--target`, avoiding writes to PEP 668 externally managed Python prefixes without enabling `--break-system-packages`.
 
 ## [0.4.0] - 2026-08-25
 

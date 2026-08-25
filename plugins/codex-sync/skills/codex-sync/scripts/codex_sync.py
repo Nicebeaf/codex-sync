@@ -1488,6 +1488,32 @@ def dependency_manager_executable(manager: str, host: str) -> str | None:
     return shutil.which(manager)
 
 
+def dependency_python_target() -> str | None:
+    """Return a user-owned import path for non-virtualenv pip installs.
+
+    ``pip --user`` is rejected by PEP 668 externally-managed interpreters such
+    as current Homebrew Python.  Installing explicitly into the interpreter's
+    user site keeps package files out of the managed prefix while preserving
+    normal import behavior on the next interpreter start.
+    """
+    if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
+        return None
+    if not site.ENABLE_USER_SITE:
+        raise SyncError("Python user-site packages are disabled outside a virtual environment")
+    user_site = site.getusersitepackages()
+    if not isinstance(user_site, str) or not user_site.strip():
+        raise SyncError("Python did not provide a usable user-site package directory")
+    target = Path(user_site).expanduser().resolve(strict=False)
+    home = Path.home().resolve(strict=False)
+    try:
+        target.relative_to(home)
+    except ValueError as exc:
+        raise SyncError("Python user-site package directory is outside the user home") from exc
+    if target == home:
+        raise SyncError("Python user-site package directory resolves to the user home")
+    return str(target)
+
+
 def dependency_install_argv(manager: str, package: str, host: str) -> tuple[list[str], str]:
     executable = dependency_manager_executable(manager, host)
     if not executable:
@@ -1495,10 +1521,10 @@ def dependency_install_argv(manager: str, package: str, host: str) -> tuple[list
     if manager == "pip":
         actual = [executable, "-m", "pip", "--isolated", "install"]
         display = [executable, "-m", "pip", "--isolated", "install"]
-        in_virtual_environment = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
-        if not in_virtual_environment and site.ENABLE_USER_SITE:
-            actual.append("--user")
-            display.append("--user")
+        target = dependency_python_target()
+        if target is not None:
+            actual.extend(["--target", target])
+            display.extend(["--target", target])
         common = [
             "--disable-pip-version-check", "--no-input", "--only-binary=:all:",
             "--index-url", "https://pypi.org/simple", package,
@@ -1582,8 +1608,8 @@ def dependency_action_for(
     action["package"] = package
     try:
         argv, command = dependency_install_argv(manager, package, host)
-    except SyncError:
-        action["blocker"] = f"package manager {manager} is missing"
+    except SyncError as exc:
+        action["blocker"] = str(exc)
         return action
     action.update({
         "action": "install",
@@ -1753,7 +1779,10 @@ def dependency_subprocess_environment() -> dict[str, str]:
         normalized = name.upper()
         if normalized.startswith("PIP_") or normalized.startswith("NPM_CONFIG_"):
             environment.pop(name, None)
-    for name in ("NODE_OPTIONS", "NODE_PATH", "PYTHONHOME", "PYTHONPATH", "RUBYOPT"):
+    for name in (
+        "NODE_OPTIONS", "NODE_PATH", "PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE",
+        "PYTHONNOUSERSITE", "RUBYOPT",
+    ):
         environment.pop(name, None)
     return environment
 
@@ -1774,9 +1803,9 @@ def execute_dependency_actions(actions: list[dict], host: str) -> None:
             raise SyncError(
                 f"Dependency installer exited {result.returncode}: {action['dependency_id']}"
             )
-        if action.get("manager") == "pip" and site.ENABLE_USER_SITE:
-            user_site = site.getusersitepackages()
-            if isinstance(user_site, str) and user_site not in sys.path and Path(user_site).is_dir():
+        if action.get("manager") == "pip":
+            user_site = dependency_python_target()
+            if user_site is not None and user_site not in sys.path and Path(user_site).is_dir():
                 # Do not use site.addsitedir(): it executes import lines from .pth files.
                 sys.path.append(user_site)
         importlib.invalidate_caches()

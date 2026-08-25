@@ -251,6 +251,13 @@ class DependencyReadinessTest(unittest.TestCase):
         self.assertIn("--disable-pip-version-check", pip_argv)
         self.assertIn("--no-input", pip_argv)
         self.assertIn("--only-binary=:all:", pip_argv)
+        self.assertNotIn("--user", pip_argv)
+        self.assertNotIn("--break-system-packages", pip_argv)
+        self.assertIn("--target", pip_argv)
+        self.assertEqual(
+            self.runtime.dependency_python_target(),
+            pip_argv[pip_argv.index("--target") + 1],
+        )
         self.assertEqual("https://pypi.org/simple", pip_argv[pip_argv.index("--index-url") + 1])
         self.assertEqual("example-package", pip_argv[-1])
         self.assertTrue(
@@ -293,6 +300,8 @@ class DependencyReadinessTest(unittest.TestCase):
                      "NPM_CONFIG_REGISTRY": "https://example.invalid/",
                      "NODE_OPTIONS": "--require=/tmp/inject.js",
                      "PYTHONPATH": "/tmp/inject",
+                     "PYTHONUSERBASE": "/tmp/inject-user-base",
+                     "PYTHONNOUSERSITE": "1",
                  },
              ):
             self.runtime.execute_dependency_actions([action], "macos")
@@ -307,6 +316,8 @@ class DependencyReadinessTest(unittest.TestCase):
         self.assertNotIn("NPM_CONFIG_REGISTRY", environment)
         self.assertNotIn("NODE_OPTIONS", environment)
         self.assertNotIn("PYTHONPATH", environment)
+        self.assertNotIn("PYTHONUSERBASE", environment)
+        self.assertNotIn("PYTHONNOUSERSITE", environment)
         probe.assert_called_once_with("python.httpx", "macos")
         invalidate.assert_called_once_with()
 
